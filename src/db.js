@@ -496,3 +496,187 @@ export async function saveProgress(treeId, sessionId, treeState, badges, complet
     .eq("id", sessionId);
   if (error) throw error;
 }
+
+// ─── ADMIN FUNCTIONS ───────────────────────────────────────────────────────
+
+export async function getAdmin(adminId) {
+  const { data, error } = await supabase
+    .from("admins")
+    .select("*, schools(*)")
+    .eq("id", adminId)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+export async function listKids(schoolId) {
+  const { data, error } = await supabase
+    .from("kids")
+    .select("*, trees:assigned_tree_id(species)")
+    .eq("school_id", schoolId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function updateKid(kidId, updates) {
+  const clean = {};
+  if (updates.name !== undefined) clean.name = updates.name.trim();
+  if (updates.username !== undefined) clean.username = updates.username.toLowerCase().trim();
+  const { error } = await supabase
+    .from("kids")
+    .update(clean)
+    .eq("id", kidId);
+  if (error) throw error;
+}
+
+export async function resetKidPassword(kidId, newPassword) {
+  const { data: hashedPw, error: hashError } = await supabase
+    .rpc("hash_password", { raw_password: newPassword });
+  if (hashError) throw hashError;
+  const { error } = await supabase
+    .from("kids")
+    .update({ password_hash: hashedPw })
+    .eq("id", kidId);
+  if (error) throw error;
+}
+
+export async function toggleKidActive(kidId, isActive) {
+  const { error } = await supabase
+    .from("kids")
+    .update({ is_active: isActive })
+    .eq("id", kidId);
+  if (error) throw error;
+}
+
+export async function deleteKid(kidId) {
+  const { data: kid } = await supabase
+    .from("kids")
+    .select("assigned_tree_id")
+    .eq("id", kidId)
+    .maybeSingle();
+
+  if (kid?.assigned_tree_id) {
+    await supabase
+      .from("trees")
+      .update({ current_kid_id: null, status: "available", assigned_at: null })
+      .eq("id", kid.assigned_tree_id);
+  }
+
+  await supabase
+    .from("care_sessions")
+    .update({ status: "completed", ended_at: new Date().toISOString() })
+    .eq("kid_id", kidId)
+    .eq("status", "active");
+
+  const { error } = await supabase
+    .from("kids")
+    .delete()
+    .eq("id", kidId);
+  if (error) throw error;
+}
+
+export async function listTrees(schoolId) {
+  const { data, error } = await supabase
+    .from("trees")
+    .select("*, keeper:current_kid_id(name, username)")
+    .eq("school_id", schoolId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function getTreeDetails(treeId) {
+  const { data: tree, error } = await supabase
+    .from("trees")
+    .select("*, keeper:current_kid_id(name, username)")
+    .eq("id", treeId)
+    .single();
+  if (error) throw error;
+
+  const chain = await getCareChain(treeId);
+
+  const { data: sessions } = await supabase
+    .from("care_sessions")
+    .select("*, kid:kid_id(name, username)")
+    .eq("tree_id", treeId)
+    .order("started_at", { ascending: true });
+
+  return { tree, chain, sessions: sessions || [] };
+}
+
+export async function deleteTree(treeId) {
+  const { data: tree } = await supabase
+    .from("trees")
+    .select("current_kid_id")
+    .eq("id", treeId)
+    .maybeSingle();
+
+  if (tree?.current_kid_id) {
+    await supabase
+      .from("kids")
+      .update({ assigned_tree_id: null })
+      .eq("id", tree.current_kid_id);
+
+    await supabase
+      .from("care_sessions")
+      .update({ status: "completed", ended_at: new Date().toISOString() })
+      .eq("tree_id", treeId)
+      .eq("status", "active");
+  }
+
+  const { error } = await supabase
+    .from("trees")
+    .delete()
+    .eq("id", treeId);
+  if (error) throw error;
+}
+
+export async function getSchoolStats(schoolId) {
+  const { count: totalKids } = await supabase
+    .from("kids")
+    .select("*", { count: "exact", head: true })
+    .eq("school_id", schoolId)
+    .eq("is_active", true);
+
+  const { count: totalTrees } = await supabase
+    .from("trees")
+    .select("*", { count: "exact", head: true })
+    .eq("school_id", schoolId);
+
+  const { count: treesInCare } = await supabase
+    .from("trees")
+    .select("*", { count: "exact", head: true })
+    .eq("school_id", schoolId)
+    .eq("status", "assigned");
+
+  const { count: treesAvailable } = await supabase
+    .from("trees")
+    .select("*", { count: "exact", head: true })
+    .eq("school_id", schoolId)
+    .eq("status", "available");
+
+  const { count: chainEntries } = await supabase
+    .from("care_chain")
+    .select("*, trees!inner(school_id)", { count: "exact", head: true })
+    .eq("trees.school_id", schoolId);
+
+  return {
+    totalKids: totalKids || 0,
+    totalTrees: totalTrees || 0,
+    treesInCare: treesInCare || 0,
+    treesAvailable: treesAvailable || 0,
+    chainEntries: chainEntries || 0,
+  };
+}
+
+export async function getRecentActivity(schoolId, limit = 10) {
+  const { data, error } = await supabase
+    .from("action_log")
+    .select("*, care_sessions!inner(kid_id, tree_id, kids:kid_id(name), trees:tree_id(species))")
+    .order("performed_at", { ascending: false })
+    .limit(limit);
+  if (error) return [];
+  return (data || []).filter(a => a.care_sessions);
+}
