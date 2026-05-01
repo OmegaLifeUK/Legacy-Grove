@@ -1123,7 +1123,7 @@ export default function LegacyGrove() {
           .action-btn:active { transform: scale(0.95); }
         `}</style>
         <div style={{ textAlign: "center", color: "white", padding: "36px 24px 16px", animation: "grow 0.6s ease" }}>
-          <div style={{ fontSize: 58, marginBottom: 6, animation: "float 3s ease-in-out infinite" }}>🌿</div>
+          <img src="/logo.png" alt="Legacy Grove" style={{ width: 90, height: 90, marginBottom: 6, animation: "float 3s ease-in-out infinite" }} />
           <h1 style={{ fontSize: 34, fontWeight: 900, margin: "0 0 4px", letterSpacing: -1 }}>Legacy Grove</h1>
           <p style={{ opacity: 0.7, fontSize: 13, margin: "0 0 10px" }}>7-Day Tree Keeper · Ages 7–11</p>
           <p style={{ fontSize: 13, opacity: 0.88, maxWidth: 300, margin: "0 auto", lineHeight: 1.65 }}>
