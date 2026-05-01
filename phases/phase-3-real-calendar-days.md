@@ -2,8 +2,6 @@
 
 Copy-paste this for the session:
 
----
-
 WORKFLOW: Phase 3 — Real Calendar Days
 Follow all stages below. Present the PLAN to the user for approval before building.
 
@@ -33,43 +31,49 @@ The app currently uses a 30-second setInterval tick to simulate days (1 day ≈ 
 ## What Exists (Current Time System)
 
 ┌────────────────────────────────┬──────────┬───────────────────────────────────────────────────────────────┐
-│ Component                      │ Status   │ Notes                                                         │
+│ Component │ Status │ Notes │
 ├────────────────────────────────┼──────────┼───────────────────────────────────────────────────────────────┤
-│ TICK_MS = 30000                │ EXISTS   │ 30-second interval timer. Each tick applies natural drift.    │
+│ TICK_MS = 30000 │ EXISTS │ 30-second interval timer. Each tick applies natural drift. │
 ├────────────────────────────────┼──────────┼───────────────────────────────────────────────────────────────┤
-│ Day advance logic              │ EXISTS   │ day += growthIncrement per tick. 3 ticks ≈ 1 day.             │
-│                                │          │ Thriving: 0.66/tick, Normal: 0.33/tick, Stressed: 0.165/tick. │
+│ Day advance logic │ EXISTS │ day += growthIncrement per tick. 3 ticks ≈ 1 day. │
+│ │ │ Thriving: 0.66/tick, Normal: 0.33/tick, Stressed: 0.165/tick. │
 ├────────────────────────────────┼──────────┼───────────────────────────────────────────────────────────────┤
-│ applyNaturalDrift()            │ EXISTS   │ Decays h2o, light, soil, bio, clean by small amounts per tick.│
-│                                │          │ Species-specific tolerances affect rate.                      │
+│ applyNaturalDrift() │ EXISTS │ Decays h2o, light, soil, bio, clean by small amounts per tick.│
+│ │ │ Species-specific tolerances affect rate. │
 ├────────────────────────────────┼──────────┼───────────────────────────────────────────────────────────────┤
-│ Random events                  │ EXISTS   │ 8% chance per tick of heatwave/storm. 15% chance of clearing. │
+│ Random events │ EXISTS │ 8% chance per tick of heatwave/storm. 15% chance of clearing. │
 ├────────────────────────────────┼──────────┼───────────────────────────────────────────────────────────────┤
-│ Ring history                   │ EXISTS   │ Adds ring color when Math.floor(day) increments.              │
+│ Ring history │ EXISTS │ Adds ring color when Math.floor(day) increments. │
 ├────────────────────────────────┼──────────┼───────────────────────────────────────────────────────────────┤
-│ Badge checks                   │ EXISTS   │ waterWiseDays, cleanCount, feedCount tracked per tick.        │
+│ Badge checks │ EXISTS │ waterWiseDays, cleanCount, feedCount tracked per tick. │
 ├────────────────────────────────┼──────────┼───────────────────────────────────────────────────────────────┤
-│ trees.assigned_at              │ EXISTS   │ Timestamp in DB. Not used in frontend yet.                    │
+│ trees.assigned_at │ EXISTS │ Timestamp in DB. Not used in frontend yet. │
 ├────────────────────────────────┼──────────┼───────────────────────────────────────────────────────────────┤
-│ trees.updated_at               │ EXISTS   │ Auto-updated by trigger. Can be used for drift calculation.   │
+│ trees.updated_at │ EXISTS │ Auto-updated by trigger. Can be used for drift calculation. │
 └────────────────────────────────┴──────────┴───────────────────────────────────────────────────────────────┘
 
 ## New Time Model
 
 ### Day Calculation
+
 ```
 currentDay = floor((now - assigned_at) / 86400000) + 1
 ```
+
 - Day 1 = first 24 hours from assignment
 - Day 7 = hours 144–168
 - Day 7 complete (pass-on eligible) = `now - assigned_at >= 7 * 86400000`
 
 ### Stat Drift (while kid is away)
+
 When the kid opens the app, calculate how much time has elapsed since `updated_at`:
+
 ```
 hoursAway = (now - updated_at) / 3600000
 ```
+
 Apply proportional drift for each hour away:
+
 - h2o: -2/hour (trees get thirsty)
 - light: ±0 (natural cycle averages out)
 - soil: -0.5/hour (slow nutrient drain)
@@ -80,19 +84,23 @@ Apply proportional drift for each hour away:
 Cap all values at 0–100. Apply species-specific tolerances as multipliers.
 
 ### Live Tick (while kid is using the app)
+
 Keep a lightweight tick (every 60 seconds) for:
+
 - Visual responsiveness (stat bars updating)
 - Random event generation (weather)
 - Saving progress to database periodically
 - But DO NOT advance the day — day is purely timestamp-based
 
 ### Random Events
+
 - Check on each app open: roll for heatwave/storm based on hours since last visit
 - While app is open: 2% chance per minute of new event
 - Events last 2–4 hours (real time), then clear automatically
 - Event start/end times stored in tree state
 
 ### Ring History
+
 - On each app open: check if a new calendar day has started since last visit
 - If yes: add a ring for each completed day (with appropriate color based on tree state at the time)
 - Store `last_ring_day` (integer) to know which days have been recorded
@@ -100,6 +108,7 @@ Keep a lightweight tick (every 60 seconds) for:
 ## Implementation Details
 
 ### New fields needed on trees table (or in tree state)
+
 ```
 last_visit_at    timestamptz    -- when kid last opened the app
 event_started_at timestamptz    -- when current weather event began
@@ -108,29 +117,31 @@ last_ring_day    int            -- last day number for which a ring was recorded
 ```
 
 ### Modified applyNaturalDrift()
+
 ```javascript
 function applyCatchUpDrift(tree, species, hoursAway) {
   const sp = SPECIES[species];
   const h = Math.min(hoursAway, 48); // Cap at 48 hours of drift (don't punish too hard)
   return {
-    h2o: Math.max(0, tree.h2o - (2 * h * (1 / sp.waterTol))),
+    h2o: Math.max(0, tree.h2o - 2 * h * (1 / sp.waterTol)),
     light: tree.light, // no drift
-    soil: Math.max(0, tree.soil - (0.5 * h)),
-    bio: Math.max(0, tree.bio - (0.3 * h)),
-    clean: Math.max(0, tree.clean - (1 * h)),
-    mood: Math.max(0, (tree.mood || 70) - (0.5 * h)),
+    soil: Math.max(0, tree.soil - 0.5 * h),
+    bio: Math.max(0, tree.bio - 0.3 * h),
+    clean: Math.max(0, tree.clean - 1 * h),
+    mood: Math.max(0, (tree.mood || 70) - 0.5 * h),
   };
 }
 ```
 
 ### Modified live tick
+
 ```javascript
 const TICK_MS = 60000; // 1 minute real time
 
 useEffect(() => {
-  if (!tree || screen !== home-like) return;
+  if (!tree || screen !== home - like) return;
   const interval = setInterval(() => {
-    setTree(prev => {
+    setTree((prev) => {
       // Small live drift (very gentle — 1/60th of hourly rate)
       const liveDrift = {
         h2o: Math.max(0, prev.h2o - 0.033),
@@ -146,7 +157,10 @@ useEffect(() => {
       }
 
       // Auto-clear events after duration
-      if (prev.eventStartedAt && Date.now() - prev.eventStartedAt > 3 * 3600000) {
+      if (
+        prev.eventStartedAt &&
+        Date.now() - prev.eventStartedAt > 3 * 3600000
+      ) {
         event = null;
       }
 
@@ -158,19 +172,22 @@ useEffect(() => {
 ```
 
 ### Day counter in UI
+
 Replace all `Math.floor(tree.day)` with:
+
 ```javascript
-const currentDay = Math.floor((Date.now() - new Date(tree.assignedAt).getTime()) / 86400000) + 1;
+const currentDay =
+  Math.floor((Date.now() - new Date(tree.assignedAt).getTime()) / 86400000) + 1;
 const isDay7 = currentDay >= 8; // day 7 completed
 ```
 
 ## Files to Modify
 
-| File | Action | Description |
-|------|--------|-------------|
-| `src/App.jsx` | MODIFY | Replace tick system, day calculation, drift logic, event timing |
-| `src/db.js` | MODIFY | Add last_visit_at tracking, catch-up drift on load |
-| `supabase/schema.sql` | MODIFY | Add last_visit_at, event_started_at, last_ring_day columns |
+| File                  | Action | Description                                                     |
+| --------------------- | ------ | --------------------------------------------------------------- |
+| `src/App.jsx`         | MODIFY | Replace tick system, day calculation, drift logic, event timing |
+| `src/db.js`           | MODIFY | Add last_visit_at tracking, catch-up drift on load              |
+| `supabase/schema.sql` | MODIFY | Add last_visit_at, event_started_at, last_ring_day columns      |
 
 ## Edge Cases to Handle
 
@@ -186,7 +203,9 @@ const isDay7 = currentDay >= 8; // day 7 completed
 **Start the dev server, open browser. For time-based testing, you will manipulate `assigned_at` and `updated_at` directly in the Supabase dashboard to simulate elapsed time. Do NOT mark TEST as complete until every item passes.**
 
 ### Prerequisite: Ensure alex has a tree
+
 Before testing, ensure alex has a tree. Either create an available tree via the admin panel and login as alex (auto-assignment will pick it up), or manually insert via Supabase SQL editor:
+
 ```sql
 -- Create a tree and assign to alex (run in Supabase SQL Editor)
 INSERT INTO trees (school_id, species, current_kid_id, status, assigned_at)
@@ -202,6 +221,7 @@ FROM trees t, kids k WHERE t.species = 'apple' AND k.username = 'alex';
 ```
 
 ### Path 1: Day 1 — Fresh Assignment
+
 1. Set tree's `assigned_at` to `now()` and `updated_at` to `now()`
 2. Login as alex → dashboard loads
 3. **Verify visually:**
@@ -213,6 +233,7 @@ FROM trees t, kids k WHERE t.species = 'apple' AND k.username = 'alex';
    - [ ] State banner shows "Okay" or "Healthy"
 
 ### Path 2: Live Tick — Stats Move While Watching
+
 1. Stay on the dashboard for 2-3 minutes
 2. **Verify:**
    - [ ] Water stat slowly decreases (visible in stat bar moving down slightly)
@@ -226,6 +247,7 @@ FROM trees t, kids k WHERE t.species = 'apple' AND k.username = 'alex';
    - [ ] Stat bar animates upward
 
 ### Path 3: Day 3 — Simulated Multi-Day Progress
+
 1. In Supabase, update the tree:
    ```sql
    UPDATE trees SET assigned_at = now() - interval '2 days', updated_at = now() - interval '4 hours'
@@ -242,6 +264,7 @@ FROM trees t, kids k WHERE t.species = 'apple' AND k.username = 'alex';
    - [ ] State may show "Okay" or "Stressed" depending on drift
 
 ### Path 4: Day 7 — Pass On Appears
+
 1. In Supabase, update the tree:
    ```sql
    UPDATE trees SET assigned_at = now() - interval '7 days', updated_at = now() - interval '1 hour'
@@ -259,6 +282,7 @@ FROM trees t, kids k WHERE t.species = 'apple' AND k.username = 'alex';
    - [ ] Pass On screen opens with tree visual, initials field, message field
 
 ### Path 5: Weather Events
+
 1. While on dashboard, watch for weather events (or wait a few minutes)
 2. **If a heatwave appears:**
    - [ ] Toast: "Heat wave! Add shade and mulch!"
@@ -275,6 +299,7 @@ FROM trees t, kids k WHERE t.species = 'apple' AND k.username = 'alex';
    - [ ] Tags removed
 
 ### Path 6: Heavy Absence — 48h Cap
+
 1. In Supabase, simulate 5 days of absence:
    ```sql
    UPDATE trees SET updated_at = now() - interval '5 days'
@@ -288,6 +313,7 @@ FROM trees t, kids k WHERE t.species = 'apple' AND k.username = 'alex';
    - [ ] After several actions: tree recovers to "Okay" or "Healthy"
 
 ### Path 7: All Stat Gauges Update Correctly
+
 1. On dashboard, verify each stat gauge:
    - [ ] Water (💧) — bar height matches percentage, color changes (green/yellow/red)
    - [ ] Light (☀️) — same
@@ -303,6 +329,7 @@ FROM trees t, kids k WHERE t.species = 'apple' AND k.username = 'alex';
 3. **Verify:** bars animate smoothly, numbers update, colors change at thresholds (60+ green, 40-60 yellow, <40 red)
 
 ### Path 8: Navigation Tabs Still Work
+
 1. Click through all bottom nav tabs:
    - [ ] Home (🌳) → tree visual, stats, suggestions, chain card
    - [ ] Care (🌿) → action buttons grid
@@ -311,6 +338,7 @@ FROM trees t, kids k WHERE t.species = 'apple' AND k.username = 'alex';
 2. **Verify:** each tab loads without errors, content is relevant, back to Home works
 
 ### Path 9: Build Check
+
 ```bash
 npm run build    # Must succeed with 0 errors, 0 warnings about time/tick
 ```
@@ -318,12 +346,14 @@ npm run build    # Must succeed with 0 errors, 0 warnings about time/tick
 ## Security Review (REVIEW stage)
 
 ### Time Manipulation Prevention
+
 - [ ] Kid cannot advance day by changing device clock (day is calculated from `assigned_at` stored server-side in Supabase — device clock doesn't affect it)
 - [ ] Verify `assigned_at` is set by the server (`default now()`) not by the client
 - [ ] If client sends a future `updated_at`, server trigger overwrites it with `now()`
 - [ ] Negative time gaps handled gracefully (if `updated_at` is somehow in the future, treat as 0 drift)
 
 ### Drift Validation
+
 - [ ] No stat can go below 0 — verify `Math.max(0, ...)` on every drift calculation
 - [ ] No stat can exceed 100 — verify `Math.min(100, ...)` on every boost
 - [ ] Drift cap at 48 hours — verify a kid gone for 2 weeks gets same drift as 2 days (prevents total death from neglect)
@@ -331,6 +361,7 @@ npm run build    # Must succeed with 0 errors, 0 warnings about time/tick
 - [ ] Species tolerance multipliers never produce negative values
 
 ### Old Timer Code Removal
+
 - [ ] No remaining references to the 30-second demo tick
 - [ ] `TICK_MS = 30000` replaced or removed
 - [ ] Comments about "TEMP TESTING" and "EASY TO REVERSE" removed
@@ -363,11 +394,13 @@ grep -rn "/ 0\|/ hoursAway\|/ elapsed" src/
 To test without waiting 7 real days, temporarily modify `assigned_at` in Supabase:
 
 **Day 1 test:**
+
 1. Ensure alex has a tree with `assigned_at = now()`
 2. Open app → should show "Day 1 of 7"
 3. Stats should be fresh (h2o: 60, light: 65, etc.)
 
 **Day 3 test:**
+
 1. Update alex's tree: `assigned_at = now() - interval '2 days'`
 2. Update `updated_at = now() - interval '6 hours'` (simulate 6h away)
 3. Open app → should show "Day 3 of 7"
@@ -375,22 +408,26 @@ To test without waiting 7 real days, temporarily modify `assigned_at` in Supabas
 5. 2 rings in ring history (Day 1 + Day 2)
 
 **Day 7 test:**
+
 1. Update: `assigned_at = now() - interval '7 days'`
 2. Open app → should show "Day 7" or "Time to Pass On!"
 3. "Pass On" button should be visible
 4. 6-7 rings in ring history
 
 **Extreme absence test:**
+
 1. Update: `updated_at = now() - interval '5 days'`
 2. Open app → stats heavily drifted but NOT all zero (48h cap)
 3. Tree should be "Stressed" or "Withering" but NOT "Dead" (from drift alone)
 
 **Edge case: Just assigned:**
+
 1. Set `assigned_at = now()`, `updated_at = now()`
 2. Open app → Day 1, no drift, no rings yet
 3. Wait 2 minutes → very small drift visible in stats
 
 ### Math Verification
+
 ```
 For each species, verify:
 - applyCatchUpDrift(freshTree('apple'), 'apple', 0) → no change
@@ -400,6 +437,7 @@ For each species, verify:
 ```
 
 ### Build Verification
+
 ```bash
 npm run build           # 0 errors
 npx vite preview        # App loads, day counter shows Day 1

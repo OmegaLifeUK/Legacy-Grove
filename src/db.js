@@ -26,6 +26,9 @@ function treeToDb(tree) {
     eco_shields_held: tree.ecoShieldsHeld || 0,
     eco_shield_expiry: tree.ecoShieldExpiry ? new Date(tree.ecoShieldExpiry).toISOString() : null,
     missions_for_shield: tree.missionsForShield || 0,
+    last_visit_at: new Date().toISOString(),
+    event_started_at: tree.eventStartedAt ? new Date(tree.eventStartedAt).toISOString() : null,
+    last_ring_day: tree.lastRingDay || 0,
   };
 }
 
@@ -47,15 +50,38 @@ function dbToTree(row, chain) {
     rings: row.rings,
     ringHistory: row.ring_history || [],
     species: row.species,
-    startedAt: new Date(row.created_at).getTime(),
+    assignedAt: row.assigned_at ? new Date(row.assigned_at).getTime() : new Date(row.created_at).getTime(),
     cleanCount: row.clean_count,
     feedCount: row.feed_count,
     waterWiseDays: row.water_wise_days,
     ecoShieldsHeld: row.eco_shields_held,
     ecoShieldExpiry: row.eco_shield_expiry ? new Date(row.eco_shield_expiry).getTime() : null,
     missionsForShield: row.missions_for_shield,
+    eventStartedAt: row.event_started_at ? new Date(row.event_started_at).getTime() : null,
+    lastRingDay: row.last_ring_day || 0,
     lastActionTimes: {},
     chain: chain || [],
+  };
+}
+
+// ─── SPECIES (duplicated from App.jsx for drift calc) ──────────────────────
+const SPECIES_TOLERANCES = {
+  apple: { waterTol: 1 }, rowan: { waterTol: 0.9 }, hazel: { waterTol: 1 },
+  fieldmaple: { waterTol: 0.9 }, holly: { waterTol: 0.9 }, silverbirch: { waterTol: 0.8 },
+  hornbeam: { waterTol: 1 }, crabapple: { waterTol: 1 }, amelanchier: { waterTol: 0.9 },
+  lombardy: { waterTol: 1.2 },
+};
+
+function applyCatchUpDrift(tree, species, hoursAway) {
+  const sp = SPECIES_TOLERANCES[species] || SPECIES_TOLERANCES.apple;
+  const h = Math.min(Math.max(hoursAway, 0), 48);
+  return {
+    ...tree,
+    h2o: Math.max(0, tree.h2o - (2 * h * (1 / sp.waterTol))),
+    soil: Math.max(0, tree.soil - (0.5 * h)),
+    bio: Math.max(0, tree.bio - (0.3 * h)),
+    clean: Math.max(0, tree.clean - (1 * h)),
+    mood: Math.max(0, (tree.mood || 70) - (0.5 * h)),
   };
 }
 
@@ -409,12 +435,51 @@ export async function loadSession(kidId) {
   if (!session || !session.trees) return null;
 
   const chain = await getCareChain(session.tree_id);
-  const tree = dbToTree(session.trees, chain);
+  let tree = dbToTree(session.trees, chain);
+  const species = session.trees.species;
+
+  // Apply catch-up drift based on time since last DB update
+  const updatedAt = session.trees.updated_at ? new Date(session.trees.updated_at).getTime() : Date.now();
+  const hoursAway = Math.max(0, (Date.now() - updatedAt) / 3600000);
+  if (hoursAway > 0 && !isNaN(hoursAway)) {
+    tree = applyCatchUpDrift(tree, species, hoursAway);
+  }
+
+  // Clear expired events
+  if (tree.eventStartedAt && Date.now() - tree.eventStartedAt > 3 * 3600000) {
+    tree.currentEvent = null;
+    tree.eventStartedAt = null;
+  }
+
+  // Backfill missed ring days
+  const now = Date.now();
+  const assignedAt = tree.assignedAt;
+  const currentDay = Math.floor((now - assignedAt) / 86400000) + 1;
+  let lastRingDay = tree.lastRingDay || 0;
+  const ringHistory = [...(tree.ringHistory || [])];
+
+  while (lastRingDay < currentDay - 1) {
+    lastRingDay++;
+    ringHistory.push("green");
+  }
+  tree.ringHistory = ringHistory;
+  tree.lastRingDay = lastRingDay;
+
+  // Update day to match timestamp-based calculation
+  tree.day = currentDay;
+
+  // Save drifted state and last_visit_at back to DB
+  try {
+    await updateTree(session.tree_id, tree);
+  } catch (e) {
+    // Non-fatal — continue with local drifted state
+  }
+
   return {
     tree,
     treeId: session.tree_id,
     sessionId: session.id,
-    species: session.trees.species,
+    species,
     badges: session.badges_earned || [],
     completedMissions: session.completed_missions || [],
   };

@@ -71,6 +71,9 @@ create table trees (
   current_kid_id uuid references kids(id),
   status varchar(20) not null default 'available',
   assigned_at timestamptz,
+  last_visit_at timestamptz,
+  event_started_at timestamptz,
+  last_ring_day int default 0,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );

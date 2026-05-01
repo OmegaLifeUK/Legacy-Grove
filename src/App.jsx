@@ -98,24 +98,6 @@ function computeState(tree) {
   return "Okay";
 }
 
-function applyNaturalDrift(tree, species) {
-  const sp = SPECIES[species] || SPECIES.apple;
-  // During dormancy the tree rests safely — no stat decay
-  if (computeState(tree) === "Dormant") return { h2o: tree.h2o, light: tree.light, soil: tree.soil, bio: tree.bio, clean: tree.clean };
-  const isHeatWave = tree.currentEvent === "heatwave";
-  const h2oDrift = isHeatWave ? -25 : -15 * sp.waterTol;
-  const mulchBonus = tree.mulched ? 0.7 : 1;
-  // Eco-shield prevents clean from decreasing for 1 day (3 ticks in demo)
-  const shieldActive = tree.ecoShieldExpiry && Date.now() < tree.ecoShieldExpiry;
-  return {
-    h2o: Math.max(0, tree.h2o + h2oDrift * mulchBonus),
-    light: tree.light,
-    soil: Math.max(0, tree.soil - 5),
-    bio: Math.max(0, tree.bio - 2),
-    clean: shieldActive ? tree.clean : Math.max(0, tree.clean - 5),
-  };
-};
-
 // ─── TREE VISUAL ──────────────────────────────────────────────────────────────
 // Growth stages: seed (day 1), sapling (days 2-3), mid (day 4), full (days 5-7)
 function getGrowthStage(day) {
@@ -787,14 +769,16 @@ function freshTree(species) {
     mulched: false, staked: false, hasBirdhouse: false,
     infested: false, fungal: false,
     currentEvent: null,
+    eventStartedAt: null,
     mood: 70,
     lastActionTimes: {},
     chain: [],
     day: 1,
     rings: 0,
-    ringHistory: [], // Array of ring colors: 'gold' for Thriving days, 'green' for others
+    ringHistory: [],
     species,
-    startedAt: Date.now(),
+    assignedAt: Date.now(),
+    lastRingDay: 0,
     ecoShieldsHeld: 0,
     ecoShieldExpiry: null,
     missionsForShield: 0,
@@ -890,9 +874,7 @@ export default function LegacyGrove() {
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [tree, treeId, sessionId, badges, completedMissions, screen]);
 
-  // Daily tick: runs every 60 seconds in demo (represents 24h)
-  // TEMP TESTING: Halved to 30s to double speed (EASY TO REVERSE)
-  const TICK_MS = 30000;
+  const TICK_MS = 60000; // 1 minute — live visual responsiveness only
 
   const showToast = useCallback((msg, type = "info") => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -918,49 +900,79 @@ export default function LegacyGrove() {
     return s;
   }, []);
 
-  // Tick simulation
+  // Compute current day from assigned_at timestamp
+  const getCurrentDay = useCallback((t) => {
+    if (!t || !t.assignedAt) return 1;
+    const elapsed = Date.now() - t.assignedAt;
+    if (elapsed < 0 || isNaN(elapsed)) return 1;
+    return Math.floor(elapsed / 86400000) + 1;
+  }, []);
+
+  // Live tick — gentle visual drift, event checks, ring tracking
   useEffect(() => {
     if (!tree || screen === "onboard" || screen === "login" || screen === "loading" || screen === "waiting") return;
     const interval = setInterval(() => {
       setTree(prev => {
         if (!prev) return prev;
-        const drifted = applyNaturalDrift(prev, species);
-        // Random events (low chance per tick)
+
+        const prevState = computeState(prev);
+        const isDormant = prevState === "Dormant";
+
+        // Gentle live drift (1/60th of hourly rates)
+        const isHeatWave = prev.currentEvent === "heatwave";
+        const sp = SPECIES[species] || SPECIES.apple;
+        const mulchBonus = prev.mulched ? 0.7 : 1;
+        const shieldActive = prev.ecoShieldExpiry && Date.now() < prev.ecoShieldExpiry;
+        const h2oDrift = isDormant ? 0 : (isHeatWave ? -0.42 : -0.033 * sp.waterTol) * mulchBonus;
+
+        const drifted = {
+          h2o: Math.max(0, prev.h2o + h2oDrift),
+          light: prev.light,
+          soil: isDormant ? prev.soil : Math.max(0, prev.soil - 0.008),
+          bio: isDormant ? prev.bio : Math.max(0, prev.bio - 0.005),
+          clean: isDormant || shieldActive ? prev.clean : Math.max(0, prev.clean - 0.017),
+        };
+
+        // Random events (2% per minute)
         let event = prev.currentEvent;
-        if (Math.random() < 0.08) event = Math.random() < 0.5 ? "heatwave" : "storm";
-        else if (Math.random() < 0.15) event = null;
+        let eventStartedAt = prev.eventStartedAt;
+
+        // Auto-clear events after 3 hours
+        if (eventStartedAt && Date.now() - eventStartedAt > 3 * 3600000) {
+          event = null;
+          eventStartedAt = null;
+        }
+
+        if (!event && Math.random() < 0.02) {
+          event = Math.random() < 0.5 ? "heatwave" : "storm";
+          eventStartedAt = Date.now();
+        }
 
         const driftedStats = [drifted.h2o, drifted.light, drifted.soil, drifted.bio, drifted.clean];
         const isWitheringCondition = driftedStats.some(v => v < 20) || driftedStats.filter(v => v < 30).length >= 2;
         const infested = prev.infested || (isWitheringCondition && Math.random() < 0.15);
         const fungal = prev.fungal || (drifted.h2o > 80 && Math.random() < 0.1);
 
-        const next = { ...prev, ...drifted, infested, fungal, currentEvent: event };
+        const next = { ...prev, ...drifted, infested, fungal, currentEvent: event, eventStartedAt };
         const newState = computeState(next);
 
-        // Ring reward (legacy counter for display)
+        // Ring reward (legacy counter)
         const rings = newState === "Thriving" ? prev.rings + 1 : prev.rings;
 
-        // Day advance (every 3 ticks = 180s = 1 day; halved to 90s when Thriving)
-        // Stressed seed/sapling/mid (day <= 4) grow at half speed; Dormant = no growth
-        const isEarlyStage = prev.day <= 4;
-        const growthIncrement = newState === "Dormant" ? 0
-          : newState === "Thriving" ? 0.66
-          : (newState === "Stressed" && isEarlyStage) ? 0.165
-          : 0.33;
-        const day = prev.day + growthIncrement;
-        
-        // Track day completion and add ring to history
-        const dayJustCompleted = Math.floor(day) > Math.floor(prev.day);
+        // Timestamp-based day
+        const currentDay = getCurrentDay(next);
+        const day = currentDay;
+
+        // Ring tracking — add ring when a new day completes
+        let lastRingDay = prev.lastRingDay || 0;
         let waterWiseDays = prev.waterWiseDays || 0;
         let ringHistory = [...(prev.ringHistory || [])];
-        
-        if (dayJustCompleted) {
-          // Add ring for the completed day
-          const ringColor = newState === "Thriving" ? "gold" : "green";
+
+        while (lastRingDay < currentDay - 1) {
+          lastRingDay++;
+          const ringColor = (lastRingDay === currentDay - 1 && newState === "Thriving") ? "gold" : "green";
           ringHistory.push(ringColor);
-          
-          // Water Wise tracking - check if water was kept above 60 for the full day
+
           if (next.h2o >= 60) {
             waterWiseDays += 1;
             if (waterWiseDays >= 3 && !badges.includes("water_wise")) {
@@ -968,7 +980,7 @@ export default function LegacyGrove() {
               showBadge("water_wise");
             }
           } else {
-            waterWiseDays = 0; // Reset if water drops below 60
+            waterWiseDays = 0;
           }
         }
 
@@ -977,14 +989,14 @@ export default function LegacyGrove() {
           if (event === "storm") showToast("⚡ Storm incoming! Stake your tree!", "warn");
         }
 
-        if (newState === "Dead" && prev.day < 8) showToast("💀 Your tree has died. Begin the cleanup quest.", "error");
-        if (newState === "Withering" && computeState(prev) !== "Withering") showToast("🥀 Tree is withering! Quick – water and care!", "warn");
+        if (newState === "Dead" && currentDay <= 7) showToast("💀 Your tree has died. Begin the cleanup quest.", "error");
+        if (newState === "Withering" && prevState !== "Withering") showToast("🥀 Tree is withering! Quick – water and care!", "warn");
 
-        return { ...next, rings, day, waterWiseDays, ringHistory };
+        return { ...next, rings, day, waterWiseDays, ringHistory, lastRingDay };
       });
     }, TICK_MS);
     return () => clearInterval(interval);
-  }, [tree, species, screen, showToast, badges, showBadge, setBadges]);
+  }, [tree, species, screen, showToast, badges, showBadge, setBadges, getCurrentDay]);
 
   // Recompute state whenever tree changes
   useEffect(() => {
@@ -1193,9 +1205,7 @@ export default function LegacyGrove() {
 
   const useEcoShield = () => {
     if (!tree || (tree.ecoShieldsHeld || 0) < 1) return;
-    // 1 day = 3 ticks at 60s each = 180s in demo
-    // TEMP TESTING: Halved to 90s to match doubled speed (EASY TO REVERSE)
-    const ONE_DAY_MS = 90000;
+    const ONE_DAY_MS = 86400000;
     setTree(prev => ({
       ...prev,
       clean: Math.min(100, prev.clean + 5),
@@ -1280,7 +1290,8 @@ export default function LegacyGrove() {
 
   // ─── SCREENS ───────────────────────────────────────────────────────────────
   const stateConf = STATE_CONFIG[state] || STATE_CONFIG.Okay;
-  const isDay7 = tree && tree.day >= 7;
+  const currentDay = tree ? getCurrentDay(tree) : 1;
+  const isDay7 = tree && currentDay >= 8;
 
   const navItems = [
     { key: "home", label: "Home", emoji: "🌳" },
@@ -1577,7 +1588,7 @@ export default function LegacyGrove() {
           <span style={{ fontWeight: 900, fontSize: 18 }}>🌑 Legacy Grove</span>
         </div>
         <div style={{ padding: 20, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", marginTop: 30 }}>
-          <TreeVisual tree={tree} state="Dead" species={species} day={Math.floor(tree.day)} />
+          <TreeVisual tree={tree} state="Dead" species={species} day={currentDay} />
           <div style={{ fontSize: 52, marginBottom: 12 }}>{step.emoji}</div>
           <h2 style={{ fontSize: 22, fontWeight: 800, color: "#5A5A5A", margin: "0 0 8px" }}>{step.title}</h2>
           <p style={{ color: "#888", fontSize: 14, maxWidth: 300, lineHeight: 1.7, marginBottom: 24 }}>{step.desc}</p>
@@ -1596,7 +1607,7 @@ export default function LegacyGrove() {
 
   // ── HOME ────────────────────────────────────────────────────────────────────
   const HomeScreen = () => {
-    const daysLeft = Math.max(0, 7 - Math.floor(tree.day));
+    const daysLeft = Math.max(0, 7 - currentDay);
     const dailyTips = ACTIONS.filter(a =>
       (tree.h2o < 50 && a.key === "water") ||
       (tree.light < 50 && a.key === "light") ||
@@ -1617,7 +1628,7 @@ export default function LegacyGrove() {
             <div style={{ color: "#666", fontSize: 12 }}>{stateConf.msg}</div>
           </div>
           <div style={{ marginLeft: "auto", textAlign: "right" }}>
-            <div style={{ fontSize: 11, color: "#999" }}>Day {Math.floor(tree.day)} of 7</div>
+            <div style={{ fontSize: 11, color: "#999" }}>Day {currentDay} of 7</div>
             <div style={{ fontSize: 11, color: daysLeft <= 2 ? "#C24D2C" : "#4A9E6F", fontWeight: 700 }}>{daysLeft}d left</div>
           </div>
         </div>
@@ -1631,7 +1642,7 @@ export default function LegacyGrove() {
               <span style={{ fontSize: 11, fontWeight: 700, color: "#2D6A4F" }}>Eco-Shield</span>
             </div>
           )}
-          <TreeVisual tree={tree} state={state} species={species} day={Math.floor(tree.day)} animate={actionAnim} />
+          <TreeVisual tree={tree} state={state} species={species} day={currentDay} animate={actionAnim} />
           <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
             <span style={S.tag(SPECIES[species].color)}>{SPECIES[species].emoji} {SPECIES[species].name}</span>
             {tree.rings > 0 && <span style={S.tag("#B5A642")}>🌀 {tree.rings} rings</span>}
@@ -1879,7 +1890,7 @@ export default function LegacyGrove() {
             <div style={{ width: 40, height: 40, borderRadius: "50%", background: "linear-gradient(135deg, #4A9E6F, #2D6A4F)", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 800, fontSize: 11 }}>YOU</div>
             <div style={{ background: "#EAF7EE", borderRadius: 12, padding: "10px 14px", flex: 1, border: "1.5px dashed #4A9E6F" }}>
               <div style={{ fontWeight: 700, fontSize: 13, color: "#2D6A4F" }}>You (current keeper)</div>
-              <div style={{ color: "#888", fontSize: 12, marginTop: 2 }}>Day {Math.floor(tree.day)} of your 7-day journey</div>
+              <div style={{ color: "#888", fontSize: 12, marginTop: 2 }}>Day {currentDay} of your 7-day journey</div>
             </div>
           </div>
         </div>
@@ -1899,11 +1910,11 @@ export default function LegacyGrove() {
         </div>
       </div>
       {/* Tree rings visualization - shows after day 1 */}
-      {Math.floor(tree.day) >= 2 && (
+      {currentDay >= 2 && (
         <div style={S.card}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#333", marginBottom: 8 }}>Tree Rings</div>
           <div style={{ color: "#888", fontSize: 12, marginBottom: 16 }}>
-            {Math.floor(tree.day) === 2 
+            {currentDay === 2
               ? "Your tree's core has formed! Rings will grow each day."
               : "Each ring represents one day of growth. Gold rings show days when your tree was thriving!"}
           </div>
@@ -1979,7 +1990,7 @@ export default function LegacyGrove() {
       ) : (
         <div style={{ padding: "0 14px" }}>
           <div style={{ background: "linear-gradient(135deg, #E8F5E9, #F1FFF4)", borderRadius: 16, padding: 16, textAlign: "center", marginBottom: 12 }}>
-            <TreeVisual tree={tree} state={state} species={species} day={Math.floor(tree.day)} />
+            <TreeVisual tree={tree} state={state} species={species} day={currentDay} />
             <div style={{ marginTop: 8 }}>
               <span style={S.tag(SPECIES[species].color)}>{SPECIES[species].emoji} {SPECIES[species].name}</span>
               <span style={{ ...S.tag(stateConf.color), marginLeft: 6 }}>{state}</span>
@@ -2157,7 +2168,7 @@ export default function LegacyGrove() {
               🏆 {badges.length}
             </span>
           )}
-          <span style={{ fontSize: 12, opacity: 0.8 }}>Day {Math.floor(tree?.day || 1)}</span>
+          <span style={{ fontSize: 12, opacity: 0.8 }}>Day {currentDay}</span>
           <button
             onClick={handleLogout}
             style={{ background: "rgba(255,255,255,0.15)", border: "none", borderRadius: 8, padding: "3px 8px", fontSize: 11, color: "rgba(255,255,255,0.8)", cursor: "pointer", fontWeight: 600 }}
