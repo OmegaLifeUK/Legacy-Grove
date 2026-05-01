@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import logoImg from "/logo.png";
+import * as db from "./db";
 
 // ─── DATA ─────────────────────────────────────────────────────────────────────
 const SPECIES = {
@@ -805,8 +806,8 @@ function freshTree(species) {
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function LegacyGrove() {
-  const [screen, setScreen] = useState("onboard");
-  const [tree, setTree] = useState({ h2o: 85, light: 80, soil: 82, bio: 78, clean: 80, mulched: false, staked: false, hasBirdhouse: false, infested: false, fungal: false, currentEvent: null, mood: 85, lastActionTimes: {}, chain: [], day: 7, rings: 6, ringHistory: ["green","green","green","green","green","green"], species: "apple", startedAt: Date.now(), ecoShieldsHeld: 0, ecoShieldExpiry: null, missionsForShield: 0, cleanCount: 0, feedCount: 0, waterWiseDays: 0 });
+  const [screen, setScreen] = useState("loading");
+  const [tree, setTree] = useState(null);
   const [species, setSpecies] = useState("apple");
   const [state, setState] = useState("Healthy");
   const [toast, setToast] = useState(null);
@@ -823,6 +824,71 @@ export default function LegacyGrove() {
   const [badgeGlow, setBadgeGlow] = useState(false);
   const toastTimer = useRef(null);
   const badgeTimer = useRef(null);
+
+  // Database-linked state
+  const [kidId, setKidId] = useState(() => localStorage.getItem("lg_kid_id"));
+  const [schoolId, setSchoolId] = useState(() => localStorage.getItem("lg_school_id"));
+  const [treeId, setTreeId] = useState(() => localStorage.getItem("lg_tree_id"));
+  const [sessionId, setSessionId] = useState(() => localStorage.getItem("lg_session_id"));
+  const [authMode, setAuthMode] = useState("login");
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [signupName, setSignupName] = useState("");
+  const [signupUsername, setSignupUsername] = useState("");
+  const [signupPassword, setSignupPassword] = useState("");
+  const saveTimer = useRef(null);
+  const waitingTimer = useRef(null);
+
+  // Persist IDs to localStorage
+  useEffect(() => {
+    if (kidId) localStorage.setItem("lg_kid_id", kidId);
+    else localStorage.removeItem("lg_kid_id");
+    if (schoolId) localStorage.setItem("lg_school_id", schoolId);
+    else localStorage.removeItem("lg_school_id");
+    if (treeId) localStorage.setItem("lg_tree_id", treeId);
+    else localStorage.removeItem("lg_tree_id");
+    if (sessionId) localStorage.setItem("lg_session_id", sessionId);
+    else localStorage.removeItem("lg_session_id");
+  }, [kidId, schoolId, treeId, sessionId]);
+
+  // Load existing session on mount
+  useEffect(() => {
+    if (!kidId) { setScreen("login"); return; }
+    db.getKid(kidId).then(kid => {
+      if (!kid || !kid.is_active) {
+        handleLogout();
+        return;
+      }
+      return db.loadSession(kidId).then(session => {
+        if (session) {
+          setTree(session.tree);
+          setTreeId(session.treeId);
+          setSessionId(session.sessionId);
+          setSpecies(session.species);
+          setBadges(session.badges || []);
+          setCompletedMissions(session.completedMissions || []);
+          setState(computeState(session.tree));
+          setScreen("home");
+        } else {
+          setScreen("waiting");
+        }
+      });
+    }).catch(() => {
+      handleLogout();
+    });
+  }, []);
+
+  // Auto-save tree state to database every 15 seconds
+  useEffect(() => {
+    if (!treeId || !sessionId || !tree || screen === "onboard" || screen === "login" || screen === "loading" || screen === "waiting") return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      db.saveProgress(treeId, sessionId, tree, badges, completedMissions).catch(() => {});
+    }, 15000);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [tree, treeId, sessionId, badges, completedMissions, screen]);
 
   // Daily tick: runs every 60 seconds in demo (represents 24h)
   // TEMP TESTING: Halved to 30s to double speed (EASY TO REVERSE)
@@ -854,7 +920,7 @@ export default function LegacyGrove() {
 
   // Tick simulation
   useEffect(() => {
-    if (!tree || screen === "onboard") return;
+    if (!tree || screen === "onboard" || screen === "login" || screen === "loading" || screen === "waiting") return;
     const interval = setInterval(() => {
       setTree(prev => {
         if (!prev) return prev;
@@ -925,15 +991,126 @@ export default function LegacyGrove() {
     if (tree) recalcState(tree);
   }, [tree, recalcState]);
 
-  const startGame = () => {
-    const t = freshTree(species);
-    setTree(t);
-    setState(computeState(t));
-    setScreen("home");
-    setCompletedMissions([]);
+  const handleLogout = () => {
+    setKidId(null);
+    setSchoolId(null);
+    setTreeId(null);
+    setSessionId(null);
+    setTree(null);
     setBadges([]);
+    setCompletedMissions([]);
+    setAuthMode("login");
+    setLoginUsername("");
+    setLoginPassword("");
+    setSignupName("");
+    setSignupUsername("");
+    setSignupPassword("");
+    setLoginError("");
     setPassOnDone(false);
-    showToast(`🌱 ${SPECIES[species].name} seed planted! Day 1 begins.`, "success");
+    setPassOnInitials("");
+    setPassOnNote("");
+    if (waitingTimer.current) clearInterval(waitingTimer.current);
+    setScreen("login");
+  };
+
+  const handleLogin = async () => {
+    if (!loginUsername.trim() || !loginPassword.trim()) {
+      setLoginError("Please fill in all fields");
+      return;
+    }
+    setLoginError("");
+    setLoginLoading(true);
+    try {
+      const result = await db.authenticateKidByUsername(loginUsername, loginPassword);
+      setLoginPassword("");
+      if (!result) {
+        setLoginError("Wrong username or password");
+        setLoginLoading(false);
+        return;
+      }
+      if (result.inactive) {
+        setLoginError("Account is not active. Ask your teacher!");
+        setLoginLoading(false);
+        return;
+      }
+      setKidId(result.kid.id);
+      setSchoolId(result.school.id);
+      const session = await db.loadSession(result.kid.id);
+      if (session) {
+        setTree(session.tree);
+        setTreeId(session.treeId);
+        setSessionId(session.sessionId);
+        setSpecies(session.species);
+        setBadges(session.badges || []);
+        setCompletedMissions(session.completedMissions || []);
+        setState(computeState(session.tree));
+        setScreen("home");
+      } else {
+        setScreen("waiting");
+      }
+    } catch (err) {
+      setLoginError("Something went wrong. Try again!");
+      setLoginPassword("");
+    }
+    setLoginLoading(false);
+  };
+
+  const handleSignup = async () => {
+    if (!signupName.trim() || !signupUsername.trim() || !signupPassword.trim()) {
+      setLoginError("Please fill in all fields");
+      return;
+    }
+    if (signupPassword.length < 4) {
+      setLoginError("Password must be at least 4 characters");
+      return;
+    }
+    setLoginError("");
+    setLoginLoading(true);
+    try {
+      const school = await db.getDefaultSchool();
+      if (!school) {
+        setLoginError("Something went wrong. Try again!");
+        setLoginLoading(false);
+        return;
+      }
+      const kid = await db.createKid(school.id, signupName.trim(), signupUsername, signupPassword);
+      setSignupPassword("");
+      setKidId(kid.id);
+      setSchoolId(school.id);
+      setScreen("onboard");
+    } catch (err) {
+      setSignupPassword("");
+      if (err?.message?.includes("duplicate") || err?.code === "23505") {
+        setLoginError("That username is already taken. Try another!");
+      } else {
+        setLoginError("Something went wrong. Try again!");
+      }
+    }
+    setLoginLoading(false);
+  };
+
+  const startGame = async () => {
+    try {
+      const result = await db.startNewTree(species, kidId, schoolId);
+      setTree(result.tree);
+      setTreeId(result.treeId);
+      setSessionId(result.sessionId);
+      setState(computeState(result.tree));
+      setScreen("home");
+      setCompletedMissions([]);
+      setBadges([]);
+      setPassOnDone(false);
+      showToast(`🌱 ${SPECIES[species].name} seed planted! Day 1 begins.`, "success");
+    } catch (err) {
+      const t = freshTree(species);
+      setTree(t);
+      setState(computeState(t));
+      setScreen("home");
+      setCompletedMissions([]);
+      setBadges([]);
+      setPassOnDone(false);
+      showToast(`🌱 ${SPECIES[species].name} seed planted! Day 1 begins.`, "success");
+    }
   };
 
   const applyAction = (action) => {
@@ -1028,8 +1205,10 @@ export default function LegacyGrove() {
     showToast("🛡️ Eco-Shield activated! Clean +5 & protected for 1 day.", "success");
   };
 
-  const doPassOn = () => {
+  const doPassOn = async () => {
     if (!passOnInitials.trim()) { showToast("Please enter your initials!", "warn"); return; }
+    if (!passOnNote.trim()) { showToast("Please write or choose a kind note!", "warn"); return; }
+
     const note = { initials: passOnInitials.toUpperCase().slice(0, 3), note: passOnNote, emoji: "🌿", timestamp: Date.now() };
     setTree(prev => ({
       ...prev,
@@ -1040,38 +1219,63 @@ export default function LegacyGrove() {
       showBadge("kindness_courier");
     }
     setPassOnDone(true);
-    showToast("🎉 Tree passed on! Receiving a new tree...", "success");
-    setTimeout(() => {
-      // Receive a "new" tree from the pool
-      const nextSpecies = Object.keys(SPECIES)[Math.floor(Math.random() * 10)];
-      const incomingChain = [
-        { initials: "AJ", note: "I watered every day 💚", emoji: "🌿", timestamp: Date.now() - 86400000 },
-        { initials: "BK", note: "Great in the sunshine! ☀️", emoji: "☀️", timestamp: Date.now() - 43200000 },
-      ];
-      const incoming = { ...freshTree(nextSpecies), chain: incomingChain, h2o: 55, bio: 60, soil: 55, clean: 65, day: 1 };
-      setTree(incoming);
-      setSpecies(nextSpecies);
-      setState(computeState(incoming));
+    showToast("🎉 Tree passed on! Another child will carry it forward.", "success");
+
+    try {
+      await db.passOnTree(treeId, sessionId, kidId, tree, passOnInitials, passOnNote, badges, completedMissions);
+    } catch (err) {
+      console.error("Failed to save pass-on:", err);
+    }
+
+    setTimeout(async () => {
+      try {
+        const received = await db.receiveExistingTree(kidId, schoolId);
+        if (received) {
+          setTree(received.tree);
+          setTreeId(received.treeId);
+          setSessionId(received.sessionId);
+          setSpecies(received.species);
+          setState(computeState(received.tree));
+          setCompletedMissions([]);
+          setBadges([]);
+          setPassOnDone(false);
+          setPassOnInitials("");
+          setPassOnNote("");
+          setScreen("home");
+          showToast(`🌳 You received a ${SPECIES[received.species].name}! Carried by ${received.tree.chain.length} carers.`, "success");
+          return;
+        }
+      } catch (err) {
+        console.error("Failed to receive tree:", err);
+      }
+      // No tree available — go to species selection
       setCompletedMissions([]);
+      setBadges([]);
       setPassOnDone(false);
       setPassOnInitials("");
       setPassOnNote("");
-      setScreen("home");
-      showToast(`🌳 You received a ${SPECIES[nextSpecies].name}! Carried by ${incomingChain.length} carers.`, "success");
+      setTreeId(null);
+      setSessionId(null);
+      setScreen("onboard");
+      showToast("🌱 No trees waiting — plant a new one!", "info");
     }, 2500);
   };
 
-  const doCleanup = () => {
+  const doCleanup = async () => {
     if (cleanupStep < 2) { setCleanupStep(s => s + 1); return; }
-    const nextSpecies = Object.keys(SPECIES)[Math.floor(Math.random() * 10)];
-    const oldChain = tree?.chain || [];
-    const t = { ...freshTree(nextSpecies), chain: oldChain };
-    setTree(t);
-    setSpecies(nextSpecies);
-    setState(computeState(t));
+    try {
+      if (treeId) await db.markTreeDead(treeId);
+      if (sessionId) await db.endCareSession(sessionId, badges, completedMissions);
+    } catch (err) {
+      console.error("Failed to end dead tree session:", err);
+    }
+    setTreeId(null);
+    setSessionId(null);
+    setCompletedMissions([]);
+    setBadges([]);
     setCleanupStep(0);
-    setScreen("home");
-    showToast(`🌱 A new ${SPECIES[nextSpecies].name} has been planted. The chain lives on.`, "success");
+    setScreen("onboard");
+    showToast("🌱 Time to plant a new seed. The chain lives on.", "success");
   };
 
   // ─── SCREENS ───────────────────────────────────────────────────────────────
@@ -1097,6 +1301,160 @@ export default function LegacyGrove() {
     smallBtn: (color = "#2D6A4F") => ({ background: color, color: "white", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }),
     tag: (color) => ({ background: color + "22", color: color, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700 }),
   };
+
+  // ── LOADING ──────────────────────────────────────────────────────────────────
+  if (screen === "loading") {
+    return (
+      <div style={{ ...S.app, background: "linear-gradient(180deg, #1A4A2E 0%, #2D7A4A 40%, #3FBB6A 100%)", justifyContent: "center", alignItems: "center" }}>
+        <img src={logoImg} alt="Legacy Grove" style={{ width: 90, height: 90, marginBottom: 16, animation: "float 3s ease-in-out infinite" }} />
+        <div style={{ color: "white", fontWeight: 800, fontSize: 20 }}>Legacy Grove</div>
+        <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 13, marginTop: 8 }}>Loading your tree...</div>
+        <style>{`@keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }`}</style>
+      </div>
+    );
+  }
+
+  // ── LOGIN / SIGN UP ──────────────────────────────────────────────────────────
+  if (screen === "login") {
+    const isSignup = authMode === "signup";
+    return (
+      <div style={{ ...S.app, background: "linear-gradient(180deg, #1A4A2E 0%, #2D7A4A 40%, #3FBB6A 100%)", justifyContent: "center", alignItems: "center", padding: 24 }}>
+        <style>{`
+          @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+          @keyframes grow { from{transform:scale(0.85) translateY(16px);opacity:0} to{transform:scale(1) translateY(0);opacity:1} }
+          input:focus { border-color: #4A9E6F !important; box-shadow: 0 0 0 3px rgba(74,158,111,0.15) !important; }
+        `}</style>
+        <form onSubmit={e => { e.preventDefault(); isSignup ? handleSignup() : handleLogin(); }} style={{ textAlign: "center", animation: "grow 0.6s ease", width: "100%", maxWidth: 340 }}>
+          <img src={logoImg} alt="Legacy Grove" style={{ width: 90, height: 90, marginBottom: 12, animation: "float 3s ease-in-out infinite" }} />
+          <h1 style={{ fontSize: 30, fontWeight: 900, color: "white", margin: "0 0 4px", letterSpacing: -1 }}>Legacy Grove</h1>
+          <p style={{ color: "rgba(255,255,255,0.7)", fontSize: 13, marginBottom: 28 }}>7-Day Tree Keeper · Ages 7–11</p>
+
+          <div style={{ background: "rgba(255,255,255,0.95)", borderRadius: 20, padding: "24px 20px", textAlign: "left" }}>
+            <div style={{ fontWeight: 800, fontSize: 18, color: "#2D6A4F", marginBottom: 16, textAlign: "center" }}>
+              {isSignup ? "Create Your Account" : "Log In to Your Grove"}
+            </div>
+
+            {loginError && (
+              <div style={{ background: "#FDE8E0", color: "#C24D2C", borderRadius: 12, padding: "10px 14px", fontSize: 14, fontWeight: 600, marginBottom: 14, textAlign: "center" }}>
+                {loginError}
+              </div>
+            )}
+
+            {isSignup && (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: "#333", marginBottom: 6 }}>Your First Name</div>
+                <input
+                  type="text"
+                  value={signupName}
+                  onChange={e => setSignupName(e.target.value.slice(0, 50))}
+                  placeholder="e.g. Alex"
+                  autoComplete="given-name"
+                  style={{ width: "100%", padding: "12px 14px", borderRadius: 12, border: "1.5px solid #E0E8DC", fontSize: 16, boxSizing: "border-box", outline: "none" }}
+                />
+              </div>
+            )}
+
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: "#333", marginBottom: 6 }}>
+                {isSignup ? "Pick a Username" : "Your Username"}
+              </div>
+              <input
+                type="text"
+                value={isSignup ? signupUsername : loginUsername}
+                onChange={e => isSignup ? setSignupUsername(e.target.value.slice(0, 50)) : setLoginUsername(e.target.value.slice(0, 50))}
+                placeholder="e.g. alex"
+                autoComplete="username"
+                style={{ width: "100%", padding: "12px 14px", borderRadius: 12, border: "1.5px solid #E0E8DC", fontSize: 16, boxSizing: "border-box", outline: "none" }}
+              />
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: "#333", marginBottom: 6 }}>
+                {isSignup ? "Pick a Password" : "Password"}
+              </div>
+              <input
+                type="password"
+                value={isSignup ? signupPassword : loginPassword}
+                onChange={e => isSignup ? setSignupPassword(e.target.value.slice(0, 100)) : setLoginPassword(e.target.value.slice(0, 100))}
+                placeholder={isSignup ? "At least 4 characters" : "Enter your password"}
+                autoComplete={isSignup ? "new-password" : "current-password"}
+                style={{ width: "100%", padding: "12px 14px", borderRadius: 12, border: "1.5px solid #E0E8DC", fontSize: 16, boxSizing: "border-box", outline: "none" }}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loginLoading}
+              style={{ ...S.btn("#2D6A4F"), width: "100%", padding: "14px", fontSize: 16, borderRadius: 14, opacity: loginLoading ? 0.6 : 1 }}
+            >
+              {loginLoading ? (isSignup ? "Creating account..." : "Logging in...") : (isSignup ? "Sign Up  🌿" : "Log In  🌿")}
+            </button>
+
+            <div style={{ textAlign: "center", marginTop: 16 }}>
+              <button
+                type="button"
+                onClick={() => { setAuthMode(isSignup ? "login" : "signup"); setLoginError(""); }}
+                style={{ background: "none", border: "none", color: "#2D6A4F", fontSize: 14, fontWeight: 600, cursor: "pointer", textDecoration: "underline" }}
+              >
+                {isSignup ? "Already have an account? Log in" : "New here? Sign up"}
+              </button>
+            </div>
+          </div>
+
+          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, marginTop: 20 }}>No ads · Safe by design</p>
+        </form>
+      </div>
+    );
+  }
+
+  // ── WAITING ─────────────────────────────────────────────────────────────────
+  if (screen === "waiting") {
+    if (!waitingTimer.current) {
+      waitingTimer.current = setInterval(async () => {
+        if (!kidId) return;
+        try {
+          const session = await db.loadSession(kidId);
+          if (session) {
+            clearInterval(waitingTimer.current);
+            waitingTimer.current = null;
+            setTree(session.tree);
+            setTreeId(session.treeId);
+            setSessionId(session.sessionId);
+            setSpecies(session.species);
+            setBadges(session.badges || []);
+            setCompletedMissions(session.completedMissions || []);
+            setState(computeState(session.tree));
+            setScreen("home");
+          }
+        } catch {}
+      }, 30000);
+    }
+    return (
+      <div style={{ ...S.app, background: "linear-gradient(180deg, #1A4A2E 0%, #2D7A4A 40%, #3FBB6A 100%)", justifyContent: "center", alignItems: "center", padding: 24 }}>
+        <style>{`
+          @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+          @keyframes grow { from{transform:scale(0.85) translateY(16px);opacity:0} to{transform:scale(1) translateY(0);opacity:1} }
+          @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        `}</style>
+        <div style={{ textAlign: "center", animation: "grow 0.6s ease", width: "100%", maxWidth: 340 }}>
+          <div style={{ fontSize: 72, marginBottom: 16, animation: "float 3s ease-in-out infinite" }}>🌱</div>
+          <h2 style={{ fontSize: 24, fontWeight: 900, color: "white", margin: "0 0 12px" }}>Waiting for Your Tree</h2>
+          <p style={{ color: "rgba(255,255,255,0.8)", fontSize: 15, lineHeight: 1.6, marginBottom: 32 }}>
+            A tree will be ready for you soon!<br />Check back later.
+          </p>
+          <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 12, marginBottom: 32, animation: "pulse 2s ease-in-out infinite" }}>
+            Checking for trees...
+          </div>
+          <button
+            onClick={handleLogout}
+            style={{ background: "rgba(255,255,255,0.15)", color: "white", border: "1px solid rgba(255,255,255,0.3)", borderRadius: 12, padding: "10px 24px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+          >
+            Log Out
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // ── ONBOARD ─────────────────────────────────────────────────────────────────
   if (screen === "onboard") {
@@ -1193,7 +1551,13 @@ export default function LegacyGrove() {
           <button style={{ ...S.btn("white"), color: "#1A4A2E", fontSize: 16, padding: "15px 0", borderRadius: 18, fontWeight: 900, width: "100%", display: "block" }} onClick={startGame}>
             Plant My {selSp?.name || "Seed"} 🌱
           </button>
-          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, marginTop: 14 }}>No ads · No chat · Safe by design</p>
+          <button
+            onClick={handleLogout}
+            style={{ background: "none", border: "none", color: "rgba(255,255,255,0.5)", fontSize: 13, fontWeight: 600, cursor: "pointer", marginTop: 16 }}
+          >
+            Log Out
+          </button>
+          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, marginTop: 10 }}>No ads · No chat · Safe by design</p>
         </div>
       </div>
     );
@@ -1624,6 +1988,7 @@ export default function LegacyGrove() {
           <div style={{ background: "white", borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
             <div style={{ fontWeight: 700, fontSize: 14, color: "#333", marginBottom: 8 }}>Your initials</div>
             <input
+              type="text"
               value={passOnInitials}
               onChange={e => setPassOnInitials(e.target.value.slice(0, 3))}
               placeholder="e.g. AJ"
@@ -1632,8 +1997,17 @@ export default function LegacyGrove() {
             />
           </div>
           <div style={{ background: "white", borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: "#333", marginBottom: 8 }}>Choose a kind note</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: "#333", marginBottom: 4 }}>Write your own message</div>
+            <div style={{ color: "#999", fontSize: 11, marginBottom: 8 }}>Or pick one below</div>
+            <textarea
+              value={passOnNote}
+              onChange={e => setPassOnNote(e.target.value.slice(0, 200))}
+              placeholder="Write a kind message for the next keeper..."
+              rows={3}
+              style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1.5px solid #E0E8DC", fontSize: 14, boxSizing: "border-box", outline: "none", resize: "none", fontFamily: "inherit" }}
+            />
+            <div style={{ fontSize: 10, color: "#BBB", textAlign: "right", marginTop: 2 }}>{passOnNote.length}/200</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
               {PASS_ON_TEMPLATES.map(t => (
                 <button key={t.key} onClick={() => setPassOnNote(t.text)}
                   style={{ background: passOnNote === t.text ? "#EAF7EE" : "#F7FAF7", border: passOnNote === t.text ? "1.5px solid #4A9E6F" : "1.5px solid #E0E8DC", borderRadius: 10, padding: "10px 12px", cursor: "pointer", textAlign: "left", fontSize: 13, color: "#333", display: "flex", alignItems: "center", gap: 8 }}>
@@ -1784,6 +2158,12 @@ export default function LegacyGrove() {
             </span>
           )}
           <span style={{ fontSize: 12, opacity: 0.8 }}>Day {Math.floor(tree?.day || 1)}</span>
+          <button
+            onClick={handleLogout}
+            style={{ background: "rgba(255,255,255,0.15)", border: "none", borderRadius: 8, padding: "3px 8px", fontSize: 11, color: "rgba(255,255,255,0.8)", cursor: "pointer", fontWeight: 600 }}
+          >
+            Log Out
+          </button>
         </div>
       </div>
 
