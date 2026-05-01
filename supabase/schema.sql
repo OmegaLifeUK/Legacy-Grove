@@ -39,6 +39,7 @@ create table kids (
   is_active boolean default true,
   created_at timestamptz default now(),
   last_login timestamptz,
+  privacy_accepted_at timestamptz,
   unique(school_id, username)
 );
 
@@ -100,7 +101,7 @@ create table care_sessions (
 create table care_chain (
   id uuid primary key default gen_random_uuid(),
   tree_id uuid not null references trees(id),
-  kid_id uuid not null references kids(id),
+  kid_id uuid references kids(id),
   care_session_id uuid references care_sessions(id),
   name varchar(100) not null,
   message text not null,
@@ -167,28 +168,32 @@ create policy "anon_read_admins" on admins for select using (true);
 create policy "anon_insert_admins" on admins for insert with check (true);
 create policy "anon_update_admins" on admins for update using (true);
 
--- Kids: read/insert/update for anon
+-- Kids: read/insert/update/delete for anon
 create policy "anon_read_kids" on kids for select using (true);
 create policy "anon_insert_kids" on kids for insert with check (true);
 create policy "anon_update_kids" on kids for update using (true);
+create policy "anon_delete_kids" on kids for delete using (true);
 
 -- Trees: read/insert/update for anon
 create policy "anon_read_trees" on trees for select using (true);
 create policy "anon_insert_trees" on trees for insert with check (true);
 create policy "anon_update_trees" on trees for update using (true);
 
--- Care sessions: read/insert/update for anon
+-- Care sessions: read/insert/update/delete for anon
 create policy "anon_read_sessions" on care_sessions for select using (true);
 create policy "anon_insert_sessions" on care_sessions for insert with check (true);
 create policy "anon_update_sessions" on care_sessions for update using (true);
+create policy "anon_delete_sessions" on care_sessions for delete using (true);
 
--- Care chain: read/insert for anon
+-- Care chain: read/insert/update for anon
 create policy "anon_read_chain" on care_chain for select using (true);
 create policy "anon_insert_chain" on care_chain for insert with check (true);
+create policy "anon_update_chain" on care_chain for update using (true);
 
--- Action log: read/insert for anon
+-- Action log: read/insert/delete for anon
 create policy "anon_read_actions" on action_log for select using (true);
 create policy "anon_insert_actions" on action_log for insert with check (true);
+create policy "anon_delete_actions" on action_log for delete using (true);
 
 -- ─── PASSWORD FUNCTIONS ────────────────────────────────────────────────────
 
@@ -205,3 +210,11 @@ begin
   return hashed = crypt(raw_password, hashed);
 end;
 $$ language plpgsql security definer;
+
+-- ─── PHASE 6 MIGRATION (run on existing databases) ───────────────────────
+-- ALTER TABLE kids ADD COLUMN IF NOT EXISTS privacy_accepted_at timestamptz;
+-- ALTER TABLE care_chain ALTER COLUMN kid_id DROP NOT NULL;
+-- CREATE POLICY "anon_delete_kids" ON kids FOR DELETE USING (true);
+-- CREATE POLICY "anon_delete_sessions" ON care_sessions FOR DELETE USING (true);
+-- CREATE POLICY "anon_delete_actions" ON action_log FOR DELETE USING (true);
+-- CREATE POLICY "anon_update_chain" ON care_chain FOR UPDATE USING (true);

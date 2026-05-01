@@ -4,11 +4,13 @@ import * as db from "../db";
 export default function KidsManager({ schoolId }) {
   const [kids, setKids] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [modal, setModal] = useState(null); // 'add' | 'edit' | 'resetpw' | null
+  const [modal, setModal] = useState(null);
   const [selected, setSelected] = useState(null);
   const [form, setForm] = useState({ name: "", username: "", password: "" });
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deleteInfo, setDeleteInfo] = useState(null);
+  const [inactiveKids, setInactiveKids] = useState(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -102,12 +104,81 @@ export default function KidsManager({ schoolId }) {
     } catch { /* ignore */ }
   };
 
-  const handleDelete = async (kid) => {
-    if (!confirm(`Delete ${kid.name}? This cannot be undone.`)) return;
+  const handleExport = async (kid) => {
     try {
-      await db.deleteKid(kid.id);
+      const data = await db.exportKidData(kid.id);
+      const json = JSON.stringify(data, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const date = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = `${kid.username}_data_export_${date}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Failed to export data");
+    }
+  };
+
+  const openDeleteAll = async (kid) => {
+    setSelected(kid);
+    setError("");
+    setDeleteInfo(null);
+    setModal("deleteall");
+    try {
+      const counts = await db.getKidDataCounts(kid.id);
+      setDeleteInfo(counts);
+    } catch {
+      setDeleteInfo({ sessions: 0, chainMessages: 0, actions: 0 });
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await db.deleteKidDataFull(selected.id);
+      setModal(null);
+      setDeleteInfo(null);
       load();
-    } catch { /* ignore */ }
+    } catch {
+      setError("Failed to delete data");
+    }
+    setSaving(false);
+  };
+
+  const handleCleanup = async () => {
+    setModal("cleanup");
+    setInactiveKids(null);
+    setError("");
+    try {
+      const inactive = await db.getInactiveKids(schoolId, 365);
+      setInactiveKids(inactive);
+    } catch {
+      setInactiveKids([]);
+      setError("Failed to load inactive accounts");
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!inactiveKids || inactiveKids.length === 0) return;
+    if (!confirm(`Delete all ${inactiveKids.length} inactive accounts? This cannot be undone.`)) return;
+    setSaving(true);
+    setError("");
+    try {
+      for (const kid of inactiveKids) {
+        await db.deleteKidDataFull(kid.id);
+      }
+      setModal(null);
+      setInactiveKids(null);
+      load();
+    } catch {
+      setError("Some deletions failed");
+    }
+    setSaving(false);
   };
 
   const S = {
@@ -116,15 +187,15 @@ export default function KidsManager({ schoolId }) {
     input: { width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #E0E8DC", fontSize: 14, boxSizing: "border-box", outline: "none" },
   };
 
-  const Modal = ({ title, onSubmit, submitLabel, children }) => (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setModal(null)}>
-      <div style={{ background: "white", borderRadius: 16, padding: "24px", width: "100%", maxWidth: 420, boxShadow: "0 8px 32px rgba(0,0,0,0.15)" }} onClick={(e) => e.stopPropagation()}>
+  const Modal = ({ title, onSubmit, submitLabel, submitColor, children }) => (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => { setModal(null); setDeleteInfo(null); setInactiveKids(null); }}>
+      <div style={{ background: "white", borderRadius: 16, padding: "24px", width: "100%", maxWidth: 480, maxHeight: "80vh", overflowY: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.15)" }} onClick={(e) => e.stopPropagation()}>
         <h3 style={{ margin: "0 0 16px", fontSize: 18, fontWeight: 800, color: "#1A3C2A" }}>{title}</h3>
         {error && <div style={{ background: "#FDE8E0", color: "#C24D2C", borderRadius: 8, padding: "8px 12px", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>{error}</div>}
         {children}
         <div style={{ display: "flex", gap: 8, marginTop: 20, justifyContent: "flex-end" }}>
-          <button onClick={() => setModal(null)} style={S.smallBtn("#F0F0F0", "#666")}>Cancel</button>
-          <button onClick={onSubmit} disabled={saving} style={{ ...S.btn(), opacity: saving ? 0.6 : 1 }}>{saving ? "Saving..." : submitLabel}</button>
+          <button onClick={() => { setModal(null); setDeleteInfo(null); setInactiveKids(null); }} style={S.smallBtn("#F0F0F0", "#666")}>Cancel</button>
+          {onSubmit && <button onClick={onSubmit} disabled={saving} style={{ ...S.btn(submitColor || "#1A3C2A"), opacity: saving ? 0.6 : 1 }}>{saving ? "Working..." : submitLabel}</button>}
         </div>
       </div>
     </div>
@@ -137,7 +208,10 @@ export default function KidsManager({ schoolId }) {
           <h1 style={{ fontSize: 24, fontWeight: 800, color: "#1A3C2A", margin: "0 0 4px" }}>Kids</h1>
           <p style={{ color: "#888", fontSize: 14, margin: 0 }}>{kids.length} students</p>
         </div>
-        <button onClick={openAdd} style={S.btn()}>+ Add Kid</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={handleCleanup} style={S.btn("#6B7280")}>Clean Up Old Data</button>
+          <button onClick={openAdd} style={S.btn()}>+ Add Kid</button>
+        </div>
       </div>
 
       {loading ? (
@@ -179,10 +253,11 @@ export default function KidsManager({ schoolId }) {
                     <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", flexWrap: "wrap" }}>
                       <button onClick={() => openEdit(kid)} style={S.smallBtn()}>Edit</button>
                       <button onClick={() => openResetPw(kid)} style={S.smallBtn()}>Reset PW</button>
+                      <button onClick={() => handleExport(kid)} style={S.smallBtn("#E3F2FD", "#1565C0")}>Export Data</button>
                       <button onClick={() => handleToggle(kid)} style={S.smallBtn(kid.is_active ? "#FFF3E0" : "#E8F5E9", kid.is_active ? "#E65100" : "#2D6A4F")}>
                         {kid.is_active ? "Deactivate" : "Activate"}
                       </button>
-                      <button onClick={() => handleDelete(kid)} style={S.smallBtn("#FDE8E0", "#C24D2C")}>Delete</button>
+                      <button onClick={() => openDeleteAll(kid)} style={S.smallBtn("#FDE8E0", "#C24D2C")}>Delete All Data</button>
                     </div>
                   </td>
                 </tr>
@@ -228,6 +303,63 @@ export default function KidsManager({ schoolId }) {
             <label style={{ fontWeight: 600, fontSize: 13, color: "#333", display: "block", marginBottom: 4 }}>New Password</label>
             <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="At least 4 characters" style={S.input} />
           </div>
+        </Modal>
+      )}
+
+      {modal === "deleteall" && selected && (
+        <Modal title={`Delete All Data — ${selected.name}`} onSubmit={handleDeleteAll} submitLabel="Delete Everything" submitColor="#C24D2C">
+          <div style={{ background: "#FFF3E0", borderRadius: 10, padding: "14px 16px", marginBottom: 16, borderLeft: "4px solid #E65100" }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: "#E65100", marginBottom: 6 }}>This will permanently delete {selected.name}'s account and all their data.</div>
+            <div style={{ fontSize: 13, color: "#8D6E3F" }}>This cannot be undone.</div>
+          </div>
+          {deleteInfo ? (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: "#333", marginBottom: 8 }}>Data to be deleted:</div>
+              <ul style={{ fontSize: 13, color: "#555", lineHeight: 1.8, margin: 0, paddingLeft: 20 }}>
+                <li>Account (name, username, login history)</li>
+                <li>{deleteInfo.sessions} care session{deleteInfo.sessions !== 1 ? "s" : ""}</li>
+                <li>{deleteInfo.chainMessages} care chain message{deleteInfo.chainMessages !== 1 ? "s" : ""}</li>
+                <li>{deleteInfo.actions} action log entr{deleteInfo.actions !== 1 ? "ies" : "y"}</li>
+              </ul>
+            </div>
+          ) : (
+            <div style={{ color: "#888", fontSize: 13, marginBottom: 16 }}>Loading data counts...</div>
+          )}
+          <div style={{ background: "#F0F7FF", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#1565C0" }}>
+            Care chain messages will be anonymized (name replaced with "A former keeper") rather than deleted, to preserve the tree's story for other children.
+          </div>
+        </Modal>
+      )}
+
+      {modal === "cleanup" && (
+        <Modal
+          title="Clean Up Old Data"
+          onSubmit={inactiveKids && inactiveKids.length > 0 ? handleBulkDelete : null}
+          submitLabel={inactiveKids ? `Delete ${inactiveKids.length} Account${inactiveKids.length !== 1 ? "s" : ""}` : ""}
+          submitColor="#C24D2C"
+        >
+          <p style={{ fontSize: 13, color: "#666", marginBottom: 16, marginTop: 0 }}>
+            Find and remove accounts that have been inactive for 365+ days. Care chain messages will be anonymized.
+          </p>
+          {inactiveKids === null ? (
+            <div style={{ color: "#888", fontSize: 13, textAlign: "center", padding: 16 }}>Scanning for inactive accounts...</div>
+          ) : inactiveKids.length === 0 ? (
+            <div style={{ background: "#E8F5E9", borderRadius: 10, padding: "16px", textAlign: "center" }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#2D6A4F" }}>All accounts are active</div>
+              <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>No accounts inactive for 365+ days.</div>
+            </div>
+          ) : (
+            <div style={{ background: "white", border: "1px solid #E8ECE8", borderRadius: 10, overflow: "hidden" }}>
+              {inactiveKids.map((kid) => (
+                <div key={kid.id} style={{ padding: "10px 14px", borderBottom: "1px solid #F0F2F0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: "#333" }}>{kid.name}</div>
+                    <div style={{ fontSize: 11, color: "#888" }}>@{kid.username} · Last login: {kid.last_login ? new Date(kid.last_login).toLocaleDateString() : "Never"}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </Modal>
       )}
     </div>

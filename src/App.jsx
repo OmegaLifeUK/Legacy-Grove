@@ -857,6 +857,17 @@ export default function LegacyGrove() {
     return false;
   }, [applySession]);
 
+  const resumeSession = useCallback(async (kid, school) => {
+    const session = await db.loadSession(kid);
+    if (session) {
+      applySession(session);
+      setScreen("home");
+    } else {
+      const assigned = await tryAutoAssign(kid, school);
+      if (!assigned) setScreen("waiting");
+    }
+  }, [applySession, tryAutoAssign]);
+
   // Load existing session on mount
   useEffect(() => {
     if (!kidId) { setScreen("login"); return; }
@@ -865,14 +876,12 @@ export default function LegacyGrove() {
         handleLogout();
         return;
       }
-      const session = await db.loadSession(kidId);
-      if (session) {
-        applySession(session);
-        setScreen("home");
-      } else {
-        const assigned = await tryAutoAssign(kidId, schoolId);
-        if (!assigned) setScreen("waiting");
+      if (!kid.privacy_accepted_at) {
+        setSchoolId(kid.school_id);
+        setScreen("consent");
+        return;
       }
+      await resumeSession(kidId, schoolId);
     }).catch(() => {
       handleLogout();
     });
@@ -1061,13 +1070,10 @@ export default function LegacyGrove() {
       }
       setKidId(result.kid.id);
       setSchoolId(result.school.id);
-      const session = await db.loadSession(result.kid.id);
-      if (session) {
-        applySession(session);
-        setScreen("home");
+      if (!result.kid.privacy_accepted_at) {
+        setScreen("consent");
       } else {
-        const assigned = await tryAutoAssign(result.kid.id, result.school.id);
-        if (!assigned) setScreen("waiting");
+        await resumeSession(result.kid.id, result.school.id);
       }
     } catch (err) {
       setLoginError("Something went wrong. Try again!");
@@ -1098,8 +1104,7 @@ export default function LegacyGrove() {
       setSignupPassword("");
       setKidId(kid.id);
       setSchoolId(school.id);
-      const assigned = await tryAutoAssign(kid.id, school.id);
-      if (!assigned) setScreen("waiting");
+      setScreen("consent");
     } catch (err) {
       setSignupPassword("");
       if (err?.message?.includes("duplicate") || err?.code === "23505") {
@@ -1109,6 +1114,15 @@ export default function LegacyGrove() {
       }
     }
     setLoginLoading(false);
+  };
+
+  const handleAcceptPrivacy = async () => {
+    try {
+      await db.acceptPrivacy(kidId);
+      await resumeSession(kidId, schoolId);
+    } catch {
+      setScreen("login");
+    }
   };
 
   const startGame = async () => {
@@ -1244,7 +1258,7 @@ export default function LegacyGrove() {
     try {
       await db.passOnTree(treeId, sessionId, kidId, tree, passOnInitials, passOnNote, badges, completedMissions);
     } catch (err) {
-      console.error("Failed to save pass-on:", err);
+      // pass-on save failed silently
     }
 
     setTimeout(async () => {
@@ -1274,7 +1288,7 @@ export default function LegacyGrove() {
       if (treeId) await db.markTreeDead(treeId);
       if (sessionId) await db.endCareSession(sessionId, badges, completedMissions);
     } catch (err) {
-      console.error("Failed to end dead tree session:", err);
+      // dead tree session cleanup failed silently
     }
     setTreeId(null);
     setSessionId(null);
@@ -1416,8 +1430,49 @@ export default function LegacyGrove() {
             </div>
           </div>
 
-          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, marginTop: 20 }}>No ads · Safe by design</p>
+          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, marginTop: 20 }}>
+            No ads · Safe by design · <a href="/privacy" target="_blank" rel="noopener noreferrer" style={{ color: "rgba(255,255,255,0.55)", textDecoration: "underline" }}>How we protect your data</a>
+          </p>
         </form>
+      </div>
+    );
+  }
+
+  // ── CONSENT ─────────────────────────────────────────────────────────────────
+  if (screen === "consent") {
+    return (
+      <div style={{ ...S.app, background: "linear-gradient(180deg, #1A4A2E 0%, #2D7A4A 40%, #3FBB6A 100%)", justifyContent: "center", alignItems: "center", padding: 24 }}>
+        <style>{`
+          @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+          @keyframes grow { from{transform:scale(0.85) translateY(16px);opacity:0} to{transform:scale(1) translateY(0);opacity:1} }
+        `}</style>
+        <div style={{ textAlign: "center", animation: "grow 0.6s ease", width: "100%", maxWidth: 380 }}>
+          <div style={{ fontSize: 56, marginBottom: 12, animation: "float 3s ease-in-out infinite" }}>🌿</div>
+          <h2 style={{ fontSize: 24, fontWeight: 900, color: "white", margin: "0 0 20px" }}>Before You Start</h2>
+
+          <div style={{ background: "rgba(255,255,255,0.95)", borderRadius: 20, padding: "24px 22px", textAlign: "left" }}>
+            <p style={{ fontSize: 15, color: "#333", lineHeight: 1.7, margin: "0 0 14px" }}>
+              Legacy Grove saves your <strong>name</strong> and the things you do in the game so your teacher can see how you're doing.
+            </p>
+            <p style={{ fontSize: 15, color: "#333", lineHeight: 1.7, margin: "0 0 20px" }}>
+              We <strong>never share</strong> your information with anyone outside your school. No ads, no tracking — just you and your tree.
+            </p>
+            <a
+              href="/privacy"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ display: "inline-block", color: "#2D6A4F", fontSize: 14, fontWeight: 600, textDecoration: "underline", marginBottom: 20 }}
+            >
+              Read more about how we protect your data
+            </a>
+            <button
+              onClick={handleAcceptPrivacy}
+              style={{ ...S.btn("#2D6A4F"), width: "100%", padding: "14px", fontSize: 16, borderRadius: 14 }}
+            >
+              I Understand — Let's Go!
+            </button>
+          </div>
+        </div>
       </div>
     );
   }

@@ -115,7 +115,7 @@ export async function authenticateKid(schoolCode, username, password) {
 
   const { data: kid, error } = await supabase
     .from("kids")
-    .select()
+    .select("id, school_id, name, username, password_hash, assigned_tree_id, is_active, created_at, last_login, privacy_accepted_at")
     .eq("school_id", school.id)
     .eq("username", username.toLowerCase().trim())
     .eq("is_active", true)
@@ -133,13 +133,14 @@ export async function authenticateKid(schoolCode, username, password) {
     .update({ last_login: new Date().toISOString() })
     .eq("id", kid.id);
 
-  return { kid, school };
+  const { password_hash: _, ...safeKid } = kid;
+  return { kid: safeKid, school };
 }
 
 export async function authenticateKidByUsername(username, password) {
   const { data: kid, error } = await supabase
     .from("kids")
-    .select("*, schools(*)")
+    .select("id, school_id, name, username, password_hash, assigned_tree_id, is_active, created_at, last_login, privacy_accepted_at, schools(*)")
     .eq("username", username.toLowerCase().trim())
     .maybeSingle();
   if (error) throw error;
@@ -156,13 +157,14 @@ export async function authenticateKidByUsername(username, password) {
     .update({ last_login: new Date().toISOString() })
     .eq("id", kid.id);
 
-  return { kid, school: kid.schools };
+  const { password_hash: _, schools: kidSchool, ...safeKid } = kid;
+  return { kid: safeKid, school: kidSchool };
 }
 
 export async function authenticateAdmin(email, password) {
   const { data: admin, error } = await supabase
     .from("admins")
-    .select("*, schools(*)")
+    .select("id, school_id, email, display_name, role, is_active, created_at, password_hash, schools(*)")
     .eq("email", email.toLowerCase().trim())
     .eq("is_active", true)
     .maybeSingle();
@@ -174,7 +176,8 @@ export async function authenticateAdmin(email, password) {
   if (rpcError) throw rpcError;
   if (!valid) return null;
 
-  return admin;
+  const { password_hash: _, ...safeAdmin } = admin;
+  return safeAdmin;
 }
 
 export async function getKidBySchoolAndUsername(schoolId, username) {
@@ -203,7 +206,7 @@ export async function createKid(schoolId, name, username, password) {
       username: username.toLowerCase().trim(),
       password_hash: hashedPw,
     })
-    .select()
+    .select("id, school_id, name, username, is_active, created_at, privacy_accepted_at")
     .single();
   if (error) throw error;
   return data;
@@ -212,7 +215,7 @@ export async function createKid(schoolId, name, username, password) {
 export async function getKid(id) {
   const { data, error } = await supabase
     .from("kids")
-    .select()
+    .select("id, school_id, name, username, assigned_tree_id, is_active, created_at, last_login, privacy_accepted_at")
     .eq("id", id)
     .single();
   if (error) throw error;
@@ -502,7 +505,7 @@ export async function saveProgress(treeId, sessionId, treeState, badges, complet
 export async function getAdmin(adminId) {
   const { data, error } = await supabase
     .from("admins")
-    .select("*, schools(*)")
+    .select("id, school_id, email, display_name, role, is_active, created_at, schools(*)")
     .eq("id", adminId)
     .eq("is_active", true)
     .maybeSingle();
@@ -513,7 +516,7 @@ export async function getAdmin(adminId) {
 export async function listKids(schoolId) {
   const { data, error } = await supabase
     .from("kids")
-    .select("*, trees:assigned_tree_id(species)")
+    .select("id, name, username, is_active, created_at, last_login, privacy_accepted_at, assigned_tree_id, trees:assigned_tree_id(species)")
     .eq("school_id", schoolId)
     .order("created_at", { ascending: true });
   if (error) throw error;
@@ -679,4 +682,152 @@ export async function getRecentActivity(schoolId, limit = 10) {
     .limit(limit);
   if (error) return [];
   return (data || []).filter(a => a.care_sessions);
+}
+
+// ─── GDPR / PRIVACY ───────────────────────────────────────────────────────
+
+export async function acceptPrivacy(kidId) {
+  const { error } = await supabase
+    .from("kids")
+    .update({ privacy_accepted_at: new Date().toISOString() })
+    .eq("id", kidId);
+  if (error) throw error;
+}
+
+export async function exportKidData(kidId) {
+  const { data: kid } = await supabase
+    .from("kids")
+    .select("id, name, username, created_at, last_login, privacy_accepted_at")
+    .eq("id", kidId)
+    .single();
+
+  const { data: sessions } = await supabase
+    .from("care_sessions")
+    .select("id, tree_id, start_day, status, badges_earned, completed_missions, started_at, ended_at")
+    .eq("kid_id", kidId)
+    .order("started_at", { ascending: true });
+
+  const { data: chainMessages } = await supabase
+    .from("care_chain")
+    .select("id, tree_id, name, message, order_index, created_at")
+    .eq("kid_id", kidId)
+    .order("created_at", { ascending: true });
+
+  const sessionIds = (sessions || []).map(s => s.id);
+  let actionLog = [];
+  if (sessionIds.length > 0) {
+    const { data } = await supabase
+      .from("action_log")
+      .select("id, action_key, day, stat_changes, performed_at")
+      .in("care_session_id", sessionIds)
+      .order("performed_at", { ascending: true });
+    actionLog = data || [];
+  }
+
+  return {
+    export_date: new Date().toISOString(),
+    kid: kid || {},
+    care_sessions: sessions || [],
+    care_chain_messages: chainMessages || [],
+    action_log: actionLog,
+  };
+}
+
+export async function getKidDataCounts(kidId) {
+  const { count: sessionCount } = await supabase
+    .from("care_sessions")
+    .select("*", { count: "exact", head: true })
+    .eq("kid_id", kidId);
+
+  const { count: chainCount } = await supabase
+    .from("care_chain")
+    .select("*", { count: "exact", head: true })
+    .eq("kid_id", kidId);
+
+  const { data: sessions } = await supabase
+    .from("care_sessions")
+    .select("id")
+    .eq("kid_id", kidId);
+  const sessionIds = (sessions || []).map(s => s.id);
+
+  let actionCount = 0;
+  if (sessionIds.length > 0) {
+    const { count } = await supabase
+      .from("action_log")
+      .select("*", { count: "exact", head: true })
+      .in("care_session_id", sessionIds);
+    actionCount = count || 0;
+  }
+
+  return {
+    sessions: sessionCount || 0,
+    chainMessages: chainCount || 0,
+    actions: actionCount || 0,
+  };
+}
+
+export async function deleteKidDataFull(kidId) {
+  const { data: kid } = await supabase
+    .from("kids")
+    .select("id, assigned_tree_id")
+    .eq("id", kidId)
+    .single();
+  if (!kid) throw new Error("Kid not found");
+
+  const { data: sessions } = await supabase
+    .from("care_sessions")
+    .select("id")
+    .eq("kid_id", kidId);
+  const sessionIds = (sessions || []).map(s => s.id);
+
+  if (sessionIds.length > 0) {
+    await supabase
+      .from("action_log")
+      .delete()
+      .in("care_session_id", sessionIds);
+  }
+
+  await supabase
+    .from("care_chain")
+    .update({ name: "A former keeper", kid_id: null })
+    .eq("kid_id", kidId);
+
+  await supabase
+    .from("care_sessions")
+    .delete()
+    .eq("kid_id", kidId);
+
+  if (kid.assigned_tree_id) {
+    await supabase
+      .from("trees")
+      .update({ current_kid_id: null, status: "available", assigned_at: null })
+      .eq("id", kid.assigned_tree_id);
+  }
+
+  // Clear any trees that reference this kid
+  await supabase
+    .from("trees")
+    .update({ current_kid_id: null, status: "available", assigned_at: null })
+    .eq("current_kid_id", kidId);
+
+  const { error } = await supabase
+    .from("kids")
+    .delete()
+    .eq("id", kidId);
+  if (error) throw error;
+}
+
+export async function getInactiveKids(schoolId, daysInactive = 365) {
+  const cutoff = new Date(Date.now() - daysInactive * 86400000).toISOString();
+  const { data, error } = await supabase
+    .from("kids")
+    .select("id, name, username, last_login, created_at")
+    .eq("school_id", schoolId)
+    .eq("is_active", true)
+    .order("last_login", { ascending: true, nullsFirst: true });
+  if (error) throw error;
+  return (data || []).filter(kid => {
+    const ref = kid.last_login || kid.created_at;
+    return new Date(ref) < new Date(cutoff);
+  });
 }
