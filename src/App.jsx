@@ -837,28 +837,42 @@ export default function LegacyGrove() {
     else localStorage.removeItem("lg_session_id");
   }, [kidId, schoolId, treeId, sessionId]);
 
+  const applySession = useCallback((session) => {
+    setTree(session.tree);
+    setTreeId(session.treeId);
+    setSessionId(session.sessionId);
+    setSpecies(session.species);
+    setBadges(session.badges || []);
+    setCompletedMissions(session.completedMissions || []);
+    setState(computeState(session.tree));
+  }, []);
+
+  const tryAutoAssign = useCallback(async (kid, school) => {
+    const result = await db.assignRandomTree(kid, school);
+    if (result) {
+      applySession(result);
+      setScreen("welcome");
+      return true;
+    }
+    return false;
+  }, [applySession]);
+
   // Load existing session on mount
   useEffect(() => {
     if (!kidId) { setScreen("login"); return; }
-    db.getKid(kidId).then(kid => {
+    db.getKid(kidId).then(async (kid) => {
       if (!kid || !kid.is_active) {
         handleLogout();
         return;
       }
-      return db.loadSession(kidId).then(session => {
-        if (session) {
-          setTree(session.tree);
-          setTreeId(session.treeId);
-          setSessionId(session.sessionId);
-          setSpecies(session.species);
-          setBadges(session.badges || []);
-          setCompletedMissions(session.completedMissions || []);
-          setState(computeState(session.tree));
-          setScreen("home");
-        } else {
-          setScreen("waiting");
-        }
-      });
+      const session = await db.loadSession(kidId);
+      if (session) {
+        applySession(session);
+        setScreen("home");
+      } else {
+        const assigned = await tryAutoAssign(kidId, schoolId);
+        if (!assigned) setScreen("waiting");
+      }
     }).catch(() => {
       handleLogout();
     });
@@ -1049,16 +1063,11 @@ export default function LegacyGrove() {
       setSchoolId(result.school.id);
       const session = await db.loadSession(result.kid.id);
       if (session) {
-        setTree(session.tree);
-        setTreeId(session.treeId);
-        setSessionId(session.sessionId);
-        setSpecies(session.species);
-        setBadges(session.badges || []);
-        setCompletedMissions(session.completedMissions || []);
-        setState(computeState(session.tree));
+        applySession(session);
         setScreen("home");
       } else {
-        setScreen("waiting");
+        const assigned = await tryAutoAssign(result.kid.id, result.school.id);
+        if (!assigned) setScreen("waiting");
       }
     } catch (err) {
       setLoginError("Something went wrong. Try again!");
@@ -1089,7 +1098,8 @@ export default function LegacyGrove() {
       setSignupPassword("");
       setKidId(kid.id);
       setSchoolId(school.id);
-      setScreen("onboard");
+      const assigned = await tryAutoAssign(kid.id, school.id);
+      if (!assigned) setScreen("waiting");
     } catch (err) {
       setSignupPassword("");
       if (err?.message?.includes("duplicate") || err?.code === "23505") {
@@ -1238,36 +1248,23 @@ export default function LegacyGrove() {
     }
 
     setTimeout(async () => {
-      try {
-        const received = await db.receiveExistingTree(kidId, schoolId);
-        if (received) {
-          setTree(received.tree);
-          setTreeId(received.treeId);
-          setSessionId(received.sessionId);
-          setSpecies(received.species);
-          setState(computeState(received.tree));
-          setCompletedMissions([]);
-          setBadges([]);
-          setPassOnDone(false);
-          setPassOnInitials("");
-          setPassOnNote("");
-          setScreen("home");
-          showToast(`🌳 You received a ${SPECIES[received.species].name}! Carried by ${received.tree.chain.length} carers.`, "success");
-          return;
-        }
-      } catch (err) {
-        console.error("Failed to receive tree:", err);
-      }
-      // No tree available — go to species selection
       setCompletedMissions([]);
       setBadges([]);
       setPassOnDone(false);
       setPassOnInitials("");
       setPassOnNote("");
-      setTreeId(null);
-      setSessionId(null);
-      setScreen("onboard");
-      showToast("🌱 No trees waiting — plant a new one!", "info");
+      try {
+        const assigned = await tryAutoAssign(kidId, schoolId);
+        if (!assigned) {
+          setTreeId(null);
+          setSessionId(null);
+          setScreen("waiting");
+        }
+      } catch {
+        setTreeId(null);
+        setSessionId(null);
+        setScreen("waiting");
+      }
     }, 2500);
   };
 
@@ -1284,8 +1281,15 @@ export default function LegacyGrove() {
     setCompletedMissions([]);
     setBadges([]);
     setCleanupStep(0);
-    setScreen("onboard");
-    showToast("🌱 Time to plant a new seed. The chain lives on.", "success");
+    try {
+      const assigned = await tryAutoAssign(kidId, schoolId);
+      if (!assigned) {
+        setScreen("waiting");
+        showToast("🌱 The chain lives on. Waiting for a new tree...", "info");
+      }
+    } catch {
+      setScreen("waiting");
+    }
   };
 
   // ─── SCREENS ───────────────────────────────────────────────────────────────
@@ -1422,20 +1426,12 @@ export default function LegacyGrove() {
   if (screen === "waiting") {
     if (!waitingTimer.current) {
       waitingTimer.current = setInterval(async () => {
-        if (!kidId) return;
+        if (!kidId || !schoolId) return;
         try {
-          const session = await db.loadSession(kidId);
-          if (session) {
+          const assigned = await tryAutoAssign(kidId, schoolId);
+          if (assigned) {
             clearInterval(waitingTimer.current);
             waitingTimer.current = null;
-            setTree(session.tree);
-            setTreeId(session.treeId);
-            setSessionId(session.sessionId);
-            setSpecies(session.species);
-            setBadges(session.badges || []);
-            setCompletedMissions(session.completedMissions || []);
-            setState(computeState(session.tree));
-            setScreen("home");
           }
         } catch {}
       }, 30000);
@@ -1461,6 +1457,58 @@ export default function LegacyGrove() {
             style={{ background: "rgba(255,255,255,0.15)", color: "white", border: "1px solid rgba(255,255,255,0.3)", borderRadius: 12, padding: "10px 24px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
           >
             Log Out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── WELCOME (auto-assigned tree) ──────────────────────────────────────────
+  if (screen === "welcome" && tree) {
+    const sp = SPECIES[species] || SPECIES.apple;
+    const chainLen = tree.chain?.length || 0;
+    return (
+      <div style={{ ...S.app, background: "linear-gradient(180deg, #1A4A2E 0%, #2D7A4A 40%, #3FBB6A 100%)", justifyContent: "flex-start", padding: 0, overflowY: "auto" }}>
+        <style>{`
+          @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+          @keyframes grow { from{transform:scale(0.85) translateY(16px);opacity:0} to{transform:scale(1) translateY(0);opacity:1} }
+        `}</style>
+        <div style={{ textAlign: "center", color: "white", padding: "40px 24px 20px", animation: "grow 0.6s ease" }}>
+          <div style={{ fontSize: 72, marginBottom: 12, animation: "float 3s ease-in-out infinite" }}>{sp.emoji}</div>
+          <h1 style={{ fontSize: 26, fontWeight: 900, margin: "0 0 6px", letterSpacing: -0.5 }}>Welcome to Your Tree!</h1>
+          <div style={{ display: "inline-flex", gap: 6, marginBottom: 8 }}>
+            <span style={{ background: "rgba(255,255,255,0.2)", borderRadius: 20, padding: "4px 12px", fontSize: 13, fontWeight: 700 }}>{sp.emoji} {sp.name}</span>
+          </div>
+          <p style={{ opacity: 0.8, fontSize: 14, margin: "8px 0 0", lineHeight: 1.6 }}>
+            {chainLen > 0
+              ? `This tree was cared for by ${chainLen} keeper${chainLen > 1 ? "s" : ""} before you!`
+              : "You're the first keeper of this tree!"}
+          </p>
+        </div>
+
+        {chainLen > 0 && (
+          <div style={{ margin: "0 16px 16px", background: "rgba(255,255,255,0.95)", borderRadius: 18, padding: "16px 16px", animation: "grow 0.4s ease 0.1s both" }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: "#2D6A4F", marginBottom: 12 }}>🔗 Messages from Past Keepers</div>
+            {tree.chain.map((c, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, marginBottom: i < chainLen - 1 ? 10 : 0, alignItems: "flex-start" }}>
+                <div style={{ width: 32, height: 32, borderRadius: "50%", background: `linear-gradient(135deg, ${["#4A9E6F","#2D6A4F","#7ECC5F","#B5A642","#C4813A"][i%5]}, #1A3C2A)`, display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 800, fontSize: 11, flexShrink: 0 }}>
+                  {c.initials || (c.name || "?").slice(0, 2).toUpperCase()}
+                </div>
+                <div style={{ background: "#F4F8F2", borderRadius: 10, padding: "8px 12px", flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 12, color: "#2D6A4F" }}>{c.initials || c.name}</div>
+                  <div style={{ color: "#555", fontSize: 13, lineHeight: 1.5 }}>{c.note}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ padding: "0 16px 40px", textAlign: "center", animation: "grow 0.5s ease 0.2s both" }}>
+          <button
+            onClick={() => { setScreen("home"); showToast(`🌱 Day 1 begins! Take great care of your ${sp.name}.`, "success"); }}
+            style={{ background: "white", color: "#1A4A2E", border: "none", borderRadius: 18, padding: "16px 0", fontSize: 17, fontWeight: 900, width: "100%", cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,0.15)" }}
+          >
+            Start Caring 🌿
           </button>
         </div>
       </div>
