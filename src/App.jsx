@@ -1763,7 +1763,7 @@ export default function LegacyGrove() {
       {/* Header */}
       <div style={S.header}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 20 }}>🌱</span>
+          <img src="/logo.png" alt="Legacy Grove" style={{ width: 28, height: 28, borderRadius: 4 }} />
           <span style={{ fontWeight: 900, fontSize: 17, letterSpacing: -0.5 }}>Legacy Grove</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
