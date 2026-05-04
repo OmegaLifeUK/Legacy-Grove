@@ -863,8 +863,13 @@ export default function LegacyGrove() {
       applySession(session);
       setScreen("home");
     } else {
-      const assigned = await tryAutoAssign(kid, school);
-      if (!assigned) setScreen("waiting");
+      const hasCompleted = await db.hasCompletedSession(kid);
+      if (hasCompleted) {
+        const assigned = await tryAutoAssign(kid, school);
+        if (!assigned) setScreen("waiting");
+      } else {
+        setScreen("onboard");
+      }
     }
   }, [applySession, tryAutoAssign]);
 

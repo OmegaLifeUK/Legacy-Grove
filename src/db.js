@@ -291,6 +291,16 @@ export async function getActiveSession(kidId) {
   return data;
 }
 
+export async function hasCompletedSession(kidId) {
+  const { count, error } = await supabase
+    .from("care_sessions")
+    .select("id", { count: "exact", head: true })
+    .eq("kid_id", kidId)
+    .eq("status", "completed");
+  if (error) throw error;
+  return count > 0;
+}
+
 export async function endCareSession(sessionId, badges, completedMissions) {
   const { error } = await supabase
     .from("care_sessions")
@@ -359,15 +369,18 @@ export async function logAction(sessionId, actionKey, day, statChanges) {
 export async function startNewTree(species, kidId, schoolId) {
   const treeRow = await createTreeForSchool(schoolId, species);
 
+  const assignedAt = new Date().toISOString();
   const { error: treeErr } = await supabase
     .from("trees")
     .update({
       current_kid_id: kidId,
       status: "assigned",
-      assigned_at: new Date().toISOString(),
+      assigned_at: assignedAt,
     })
     .eq("id", treeRow.id);
   if (treeErr) throw treeErr;
+
+  treeRow.assigned_at = assignedAt;
 
   await supabase
     .from("kids")
@@ -391,15 +404,18 @@ export async function assignRandomTree(kidId, schoolId) {
 
   const treeRow = available[Math.floor(Math.random() * available.length)];
 
+  const assignedAt = new Date().toISOString();
   const { error: treeErr } = await supabase
     .from("trees")
     .update({
       current_kid_id: kidId,
       status: "assigned",
-      assigned_at: new Date().toISOString(),
+      assigned_at: assignedAt,
     })
     .eq("id", treeRow.id);
   if (treeErr) throw treeErr;
+
+  treeRow.assigned_at = assignedAt;
 
   await supabase
     .from("kids")
