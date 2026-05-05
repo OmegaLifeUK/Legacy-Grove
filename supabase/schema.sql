@@ -69,6 +69,7 @@ create table trees (
   eco_shields_held int default 0,
   eco_shield_expiry timestamptz,
   missions_for_shield int default 0,
+  mission_reset_day int default 0,
   current_kid_id uuid references kids(id),
   status varchar(20) not null default 'available',
   assigned_at timestamptz,

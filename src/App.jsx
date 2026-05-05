@@ -782,6 +782,7 @@ function freshTree(species) {
     ecoShieldsHeld: 0,
     ecoShieldExpiry: null,
     missionsForShield: 0,
+    missionResetDay: 0,
     cleanCount: 0,
     feedCount: 0,
     waterWiseDays: 0,
@@ -1226,16 +1227,21 @@ export default function LegacyGrove() {
   };
 
   const completeMission = (mission) => {
-    if (completedMissions.includes(mission.key)) return;
-    setCompletedMissions(prev => [...prev, mission.key]);
+    const day = getCurrentDay(tree);
+    if ((tree?.missionResetDay || 0) === day && completedMissions.includes(mission.key)) return;
+    if ((tree?.missionResetDay || 0) !== day) {
+      setCompletedMissions([mission.key]);
+    } else {
+      setCompletedMissions(prev => [...prev, mission.key]);
+    }
     setTree(prev => {
       if (!prev) return prev;
       const next = { ...prev };
+      next.missionResetDay = day;
       Object.entries(mission.boost).forEach(([k, v]) => {
         if (k === "mood") next.mood = Math.min(100, (next.mood || 50) + v);
         else next[k] = Math.min(100, (next[k] || 0) + v);
       });
-      // Every 2 missions completed awards 1 Eco-Shield
       const newMissionsForShield = (prev.missionsForShield || 0) + 1;
       if (newMissionsForShield >= 2) {
         next.ecoShieldsHeld = (prev.ecoShieldsHeld || 0) + 1;
@@ -1930,16 +1936,20 @@ export default function LegacyGrove() {
 
   // ── MISSIONS ─────────────────────────────────────────────────────────────────
   const MissionsScreen = () => {
-    const todaysMissions = MISSIONS.slice(0, 4);
+    const day = currentDay;
+    const isNewDay = (tree?.missionResetDay || 0) !== day;
+    const offset = (day - 1) % MISSIONS.length;
+    const todaysMissions = Array.from({ length: 4 }, (_, i) => MISSIONS[(offset + i) % MISSIONS.length]);
     return (
       <div>
         <div style={{ padding: "16px 14px 8px" }}>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#2D6A4F" }}>🌍 Mini-Missions</h2>
           <p style={{ margin: "4px 0 0", color: "#888", fontSize: 13 }}>Real-world pledges — 1 tap. Earn eco-boosts for your tree!</p>
+          <p style={{ margin: "2px 0 0", color: "#AAA", fontSize: 11 }}>Missions refresh each day</p>
         </div>
         <div style={{ padding: "0 14px" }}>
           {todaysMissions.map(m => {
-            const done = completedMissions.includes(m.key);
+            const done = !isNewDay && completedMissions.includes(m.key);
             return (
               <div key={m.key} style={{ background: done ? "#EAF7EE" : "white", borderRadius: 14, padding: "14px 16px", marginBottom: 10, border: done ? "1.5px solid #4A9E6F" : "1.5px solid #E0E8DC", display: "flex", alignItems: "center", gap: 12 }}>
                 <span style={{ fontSize: 28, opacity: done ? 0.5 : 1 }}>{m.emoji}</span>
