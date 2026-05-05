@@ -802,6 +802,7 @@ export default function LegacyGrove() {
   const [passOnNote, setPassOnNote] = useState("");
   const [passOnInitials, setPassOnInitials] = useState("");
   const [passOnDone, setPassOnDone] = useState(false);
+  const [treesCompleted, setTreesCompleted] = useState(0);
   const [showChainModal, setShowChainModal] = useState(false);
   const [cleanupStep, setCleanupStep] = useState(0);
   const [newBadge, setNewBadge] = useState(null);
@@ -871,6 +872,8 @@ export default function LegacyGrove() {
         setScreen("onboard");
       }
     }
+    const count = await db.getCompletedSessionCount(kid);
+    setTreesCompleted(count);
   }, [applySession, tryAutoAssign]);
 
   // Load existing session on mount
@@ -1151,6 +1154,20 @@ export default function LegacyGrove() {
       setBadges([]);
       setPassOnDone(false);
       showToast(`🌱 ${SPECIES[species].name} seed planted! Day 1 begins.`, "success");
+    }
+  };
+
+  const handleReplant = async () => {
+    try {
+      if (treeId && sessionId && kidId) {
+        await db.releaseTree(treeId, sessionId, kidId);
+      }
+      setTree(null);
+      setTreeId(null);
+      setSessionId(null);
+      setScreen("onboard");
+    } catch {
+      showToast("Something went wrong. Try again!", "error");
     }
   };
 
@@ -2018,6 +2035,17 @@ export default function LegacyGrove() {
         </div>
       </div>
       {/* Tree rings visualization - shows after day 1 */}
+      {treesCompleted > 0 && (
+        <div style={S.card}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#333" }}>Your journey</div>
+              <div style={{ color: "#888", fontSize: 12 }}>Trees you've cared for</div>
+            </div>
+            <div style={{ fontSize: 28, fontWeight: 900, color: "#4A9E6F" }}>{treesCompleted}</div>
+          </div>
+        </div>
+      )}
       {currentDay >= 2 && (
         <div style={S.card}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#333", marginBottom: 8 }}>Tree Rings</div>
@@ -2072,6 +2100,19 @@ export default function LegacyGrove() {
               </div>
             </div>
           )}
+        </div>
+      )}
+      {treesCompleted > 0 && (
+        <div style={{ padding: "16px 14px 24px", textAlign: "center" }}>
+          <div style={{ borderTop: "1px solid #E0E8DC", paddingTop: 20 }}>
+            <p style={{ color: "#AAA", fontSize: 12, margin: "0 0 10px" }}>Want to try a different species from scratch?</p>
+            <button
+              onClick={handleReplant}
+              style={{ background: "none", border: "1.5px solid #C8D6C0", borderRadius: 12, padding: "10px 20px", color: "#6B8A63", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+            >
+              🌱 Plant a New Tree
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -301,6 +301,31 @@ export async function hasCompletedSession(kidId) {
   return count > 0;
 }
 
+export async function getCompletedSessionCount(kidId) {
+  const { count, error } = await supabase
+    .from("care_sessions")
+    .select("id", { count: "exact", head: true })
+    .eq("kid_id", kidId)
+    .eq("status", "completed");
+  if (error) throw error;
+  return count || 0;
+}
+
+export async function releaseTree(treeId, sessionId, kidId) {
+  await supabase
+    .from("trees")
+    .update({ status: "available", current_kid_id: null })
+    .eq("id", treeId);
+  await supabase
+    .from("care_sessions")
+    .update({ status: "abandoned", ended_at: new Date().toISOString() })
+    .eq("id", sessionId);
+  await supabase
+    .from("kids")
+    .update({ assigned_tree_id: null })
+    .eq("id", kidId);
+}
+
 export async function endCareSession(sessionId, badges, completedMissions) {
   const { error } = await supabase
     .from("care_sessions")
