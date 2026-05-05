@@ -1370,7 +1370,7 @@ export default function LegacyGrove() {
     return (
       <div style={{ ...S.app, background: "linear-gradient(180deg, #1A4A2E 0%, #2D7A4A 40%, #3FBB6A 100%)", justifyContent: "center", alignItems: "center" }}>
         <img src={logoImg} alt="Legacy Grove" style={{ width: 90, height: 90, marginBottom: 16, animation: "float 3s ease-in-out infinite" }} />
-        <div style={{ color: "white", fontWeight: 800, fontSize: 20 }}>Legacy Grove</div>
+        <div style={{ color: "white", fontWeight: 900, fontSize: 20, fontFamily: "'Playfair Display', serif", letterSpacing: 1 }}>LEGACY GROVE</div>
         <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 13, marginTop: 8 }}>Loading your tree...</div>
         <style>{`@keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }`}</style>
       </div>
@@ -1389,7 +1389,7 @@ export default function LegacyGrove() {
         `}</style>
         <form onSubmit={e => { e.preventDefault(); isSignup ? handleSignup() : handleLogin(); }} style={{ textAlign: "center", animation: "grow 0.6s ease", width: "100%", maxWidth: 340 }}>
           <img src={logoImg} alt="Legacy Grove" style={{ width: 90, height: 90, marginBottom: 12, animation: "float 3s ease-in-out infinite" }} />
-          <h1 style={{ fontSize: 30, fontWeight: 900, color: "white", margin: "0 0 4px", letterSpacing: -1 }}>Legacy Grove</h1>
+          <h1 style={{ fontSize: 30, fontWeight: 900, color: "white", margin: "0 0 4px", letterSpacing: 1, fontFamily: "'Playfair Display', serif" }}>LEGACY GROVE</h1>
           <p style={{ color: "rgba(255,255,255,0.7)", fontSize: 13, marginBottom: 28 }}>7-Day Tree Keeper · Ages 7–11</p>
 
           <div style={{ background: "rgba(255,255,255,0.95)", borderRadius: 20, padding: "24px 20px", textAlign: "left" }}>
@@ -1631,7 +1631,7 @@ export default function LegacyGrove() {
         `}</style>
         <div style={{ textAlign: "center", color: "white", padding: "36px 24px 16px", animation: "grow 0.6s ease" }}>
           <img src={logoImg} alt="Legacy Grove" style={{ width: 90, height: 90, marginBottom: 6, animation: "float 3s ease-in-out infinite" }} />
-          <h1 style={{ fontSize: 34, fontWeight: 900, margin: "0 0 4px", letterSpacing: -1 }}>Legacy Grove</h1>
+          <h1 style={{ fontSize: 34, fontWeight: 900, margin: "0 0 4px", letterSpacing: 1, fontFamily: "'Playfair Display', serif" }}>LEGACY GROVE</h1>
           <p style={{ opacity: 0.7, fontSize: 13, margin: "0 0 10px" }}>7-Day Tree Keeper · Ages 7–11</p>
           <p style={{ fontSize: 13, opacity: 0.88, maxWidth: 300, margin: "0 auto", lineHeight: 1.65 }}>
             Choose your seed, care for it for 7 days, then pass it on with a kind message 💚
@@ -1722,7 +1722,7 @@ export default function LegacyGrove() {
     return (
       <div style={S.app}>
         <div style={{ ...S.header, background: "linear-gradient(135deg, #5A5A5A, #888)" }}>
-          <span style={{ fontWeight: 900, fontSize: 18 }}>🌑 Legacy Grove</span>
+          <span style={{ fontWeight: 900, fontSize: 18, fontFamily: "'Playfair Display', serif" }}>🌑 Legacy Grove</span>
         </div>
         <div style={{ padding: 20, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", marginTop: 30 }}>
           <TreeVisual tree={tree} state="Dead" species={species} day={currentDay} />
@@ -2315,7 +2315,7 @@ export default function LegacyGrove() {
       <div style={S.header}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <img src={logoImg} alt="Legacy Grove" style={{ width: 28, height: 28, borderRadius: 4 }} />
-          <span style={{ fontWeight: 900, fontSize: 17, letterSpacing: -0.5 }}>Legacy Grove</span>
+          <span style={{ fontWeight: 900, fontSize: 17, letterSpacing: 0.5, fontFamily: "'Playfair Display', serif" }}>Legacy Grove</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {badges.length > 0 && (
