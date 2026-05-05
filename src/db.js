@@ -498,9 +498,11 @@ export async function loadSession(kidId) {
   }
 
   // Backfill missed ring days
-  const now = Date.now();
-  const assignedAt = tree.assignedAt;
-  const currentDay = Math.floor((now - assignedAt) / 86400000) + 1;
+  const toUKDate = (ts) => {
+    const parts = new Date(ts).toLocaleDateString("en-GB", { timeZone: "Europe/London" }).split("/");
+    return new Date(parts[2], parts[1] - 1, parts[0]);
+  };
+  const currentDay = Math.floor((toUKDate(Date.now()) - toUKDate(tree.assignedAt)) / 86400000) + 1;
   let lastRingDay = tree.lastRingDay || 0;
   const ringHistory = [...(tree.ringHistory || [])];
 

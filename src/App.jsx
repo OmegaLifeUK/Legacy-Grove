@@ -932,13 +932,19 @@ export default function LegacyGrove() {
     return s;
   }, []);
 
-  // Compute current day from assigned_at timestamp
+  const getUKDate = useCallback((ts) => {
+    const parts = new Date(ts).toLocaleDateString("en-GB", { timeZone: "Europe/London" }).split("/");
+    return new Date(parts[2], parts[1] - 1, parts[0]);
+  }, []);
+
   const getCurrentDay = useCallback((t) => {
     if (!t || !t.assignedAt) return 1;
-    const elapsed = Date.now() - t.assignedAt;
-    if (elapsed < 0 || isNaN(elapsed)) return 1;
-    return Math.floor(elapsed / 86400000) + 1;
-  }, []);
+    const assignedDay = getUKDate(t.assignedAt);
+    const today = getUKDate(Date.now());
+    const diff = Math.floor((today - assignedDay) / 86400000);
+    if (diff < 0 || isNaN(diff)) return 1;
+    return diff + 1;
+  }, [getUKDate]);
 
   // Live tick — gentle visual drift, event checks, ring tracking
   useEffect(() => {
